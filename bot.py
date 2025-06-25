@@ -209,11 +209,11 @@ def parse_time_input(time_str):
             hour, minute = map(int, time_str.split('.'))
         
         if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return True, hour, minute
+            return (True, hour, minute)
         else:
-            return False, "时间格式错误：小时应在0-23之间，分钟应在0-59之间"
+            return (False, 0, "时间格式错误：小时应在0-23之间，分钟应在0-59之间")
     except:
-        return False, "时间格式错误：请使用 HH:MM 格式，如 8:30"
+        return (False, 0, "时间格式错误：请使用 HH:MM 格式，如 8:30")
 
 # 定时任务执行器（新逻辑）
 class TaskScheduler:
@@ -946,32 +946,6 @@ async def akile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 定时任务相关命令
 
-async def schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """定时任务管理入口"""
-    user_id = update.effective_user.id
-    if not is_allowed(user_id):
-        await check_admin_and_warn(update, user_id, "/schedule")
-        return
-    
-    if is_banned(user_id):
-        await update.message.reply_text("❌ 您已被封禁，无法使用此功能")
-        return
-    
-    keyboard = [
-        ['📅 添加定时任务', '📋 查看我的任务'],
-        ['❌ 删除定时任务', '🔙 返回主菜单']
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-    
-    await update.message.reply_text(
-        "🕐 定时任务管理\n\n"
-        "• 📅 添加定时任务 - 设置自动签到时间\n"
-        "• 📋 查看我的任务 - 查看所有定时任务\n"
-        "• ❌ 删除定时任务 - 删除指定的定时任务\n"
-        "• 🔙 返回主菜单 - 返回主菜单",
-        reply_markup=reply_markup
-    )
-
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_allowed(user_id):
@@ -1024,13 +998,13 @@ async def add_custom_time_input(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def add_custom_time_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_str = update.message.text.strip()
-    success, result = parse_time_input(time_str)
+    result = parse_time_input(time_str)
     
-    if not success:
-        await update.message.reply_text(f"❌ {result}\n请重新输入时间（格式：HH:MM）：")
+    if not result[0]:
+        await update.message.reply_text(f"❌ {result[2]}\n请重新输入时间（格式：HH:MM）：")
         return "ADD_CUSTOM_TIME"
     
-    hour, minute = result
+    success, hour, minute = result
     module = context.user_data['add_module']
     user_id = update.effective_user.id
     
@@ -1179,7 +1153,6 @@ def main():
             print(f"[启动通知失败] {e}")
         os.remove('.restarting')
     # 注册所有handler
-    app.add_handler(conv_handler)
     app.add_handler(CommandHandler('allow', allow_user))
     app.add_handler(CommandHandler('acck', acck_entry))
     app.add_handler(CommandHandler('akile', akile_entry))
@@ -1199,48 +1172,10 @@ def main():
     app.add_handler(CommandHandler('menu', menu_cmd))
     app.add_handler(CommandHandler('summary', summary_cmd))
     
-    # 添加定时任务相关命令处理器
-    app.add_handler(CommandHandler('schedule', schedule_cmd))
-    app.add_handler(CommandHandler('addschedule', add_cmd))
-    app.add_handler(CommandHandler('listschedules', list_schedules_cmd))
-    app.add_handler(CommandHandler('deleteschedule', delete_schedule_cmd))
-    
     # 添加新的定时任务命令处理器
     app.add_handler(CommandHandler('add', add_cmd))
     app.add_handler(CommandHandler('del', del_cmd))
     app.add_handler(CommandHandler('all', all_cmd))
-    
-    # 添加定时任务相关的消息处理器
-    app.add_handler(MessageHandler(filters.Regex('^🕐 定时任务$'), schedule_cmd))
-    app.add_handler(MessageHandler(filters.Regex('^📅 添加定时任务$'), add_cmd))
-    app.add_handler(MessageHandler(filters.Regex('^📋 查看我的任务$'), list_schedules_cmd))
-    app.add_handler(MessageHandler(filters.Regex('^❌ 删除定时任务$'), delete_schedule_cmd))
-    app.add_handler(MessageHandler(filters.Regex('^🔙 返回主菜单$'), menu_cmd))
-    
-    # 添加定时任务配置的对话处理器
-    schedule_conv_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex('^📅 .*定时任务$'), input_schedule_name),
-        ],
-        states={
-            INPUT_SCHEDULE_CRON: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_schedule_cron)],
-            INPUT_SCHEDULE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_schedule)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-    )
-    app.add_handler(schedule_conv_handler)
-    
-    # 添加删除定时任务的对话处理器
-    delete_schedule_conv_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex('^❌ .*定时任务$'), delete_schedule_cmd),
-        ],
-        states={
-            INPUT_SCHEDULE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_delete_schedule)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-    )
-    app.add_handler(delete_schedule_conv_handler)
     
     # 添加add命令的对话处理器
     app.add_handler(add_conv_handler)
@@ -1256,6 +1191,15 @@ def main():
     print('🚀 Bot已启动...')
     print('🕐 定时任务调度器已启动...')
     app.run_polling(drop_pending_updates=True)
+
+def save_user_info(user_id, module, info):
+    """保存用户信息到对应模块的users目录"""
+    module_dir = module
+    users_dir = os.path.join(module_dir, 'users')
+    os.makedirs(users_dir, exist_ok=True)
+    user_file = os.path.join(users_dir, f"{user_id}.json")
+    with open(user_file, 'w', encoding='utf-8') as f:
+        json.dump(info, f, ensure_ascii=False, indent=2)
 
 if __name__ == '__main__':
     main() 
