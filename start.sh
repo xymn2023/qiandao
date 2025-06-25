@@ -3,7 +3,7 @@ set -e
 
 # ================== 服务管理器脚本 ==================
 #
-#   用作安装器: curl ... | sudo bash -s install
+#   用作安装器: bash <(curl -fsSL https://raw.githubusercontent.com/xymn2023/qiandao/main/start.sh)
 #   用作管理器: qiandao-bot (或在项目目录中 bash start.sh)
 #
 # ====================================================
@@ -32,9 +32,9 @@ else
     IS_ROOT=0
 fi
 
-# 自动安装（仅首次）
+# 只要未安装，立即自举
 if [ ! -d "$INSTALL_PATH" ]; then
-    echo "正在安装到 $INSTALL_PATH ..."
+    echo "未检测到机器人，正在自动下载安装..."
     rm -rf "$INSTALL_PATH"
     git clone "$REPO_URL" "$INSTALL_PATH"
     cd "$INSTALL_PATH"
@@ -50,53 +50,17 @@ if [ ! -d "$INSTALL_PATH" ]; then
         chmod +x "$SHORTCUT"
         echo "✅ 全局命令已注册：qiandao-bot"
     else
-        # 添加 alias 到 .bashrc
         if ! grep -q "alias qiandao-bot=" ~/.bashrc; then
             echo "$ALIAS_CMD" >> ~/.bashrc
             echo "alias 已添加到 ~/.bashrc，请运行 source ~/.bashrc 后使用 qiandao-bot"
         fi
     fi
     echo "✅ 安装完成！"
-    # 进入管理菜单
-    bash start.sh
-    exit 0
-fi
-
-# --- 主逻辑：根据参数判断执行流程 ---
-# 此结构确保'install'模式下不会执行任何可能因管道执行而出错的路径检测
-if [ "$1" == "install" ]; then
-    # --- 安装流程 ---
-    echo "开始一键安装..."
-    INSTALL_PATH="/opt/qiandao"
-    cd /tmp || exit
-    if ! command -v git &> /dev/null; then echo "错误:需要git"; exit 1; fi
-    [ -d "qiandao" ] && rm -rf "qiandao"
-    git clone "https://github.com/xymn2023/qiandao.git" "qiandao"
-    [ -d "$INSTALL_PATH" ] && rm -rf "$INSTALL_PATH"
-    mv "qiandao" /opt/
-    cd "$INSTALL_PATH" || exit
-    python3 -m venv .venv
-    ./.venv/bin/python -m pip install --upgrade pip python-telegram-bot requests pyotp curl_cffi python-dotenv
-    read -p "请输入你的 Telegram Bot Token: " TOKEN < /dev/tty
-    read -p "请输入你的 Telegram Chat ID (管理员ID): " CHAT_ID < /dev/tty
-    sed -i "s/^TELEGRAM_BOT_TOKEN = .*/TELEGRAM_BOT_TOKEN = \"$TOKEN\"/" bot.py
-    sed -i "s/^TELEGRAM_CHAT_ID = .*/TELEGRAM_CHAT_ID = \"$CHAT_ID\"/" bot.py
-    
-    chmod +x "$INSTALL_PATH/start.sh"
-    if [ "$(id -u)" -eq 0 ]; then
-        ln -sf "$INSTALL_PATH/start.sh" /usr/local/bin/qiandao-bot
-        chmod +x /usr/local/bin/qiandao-bot
-        echo "✅ 已创建可执行的系统快捷命令 'qiandao-bot'。"
-    fi
-    echo "✅ 安装完成！正在进入管理菜单..."
     exec bash "$INSTALL_PATH/start.sh"
     exit 0
 fi
 
-# --- 从此处开始，脚本已在文件系统中，可以安全地进行路径检测和函数定义 ---
-
 # --- 全局变量 ---
-INSTALL_PATH="/opt/qiandao"
 SCRIPT_REAL_PATH=$(readlink -f "${BASH_SOURCE[0]}")
 SCRIPT_DIR=$(dirname "$SCRIPT_REAL_PATH")
 PYTHON_IN_VENV="$SCRIPT_DIR/.venv/bin/python"
@@ -221,45 +185,11 @@ run_management_menu() {
 export -f perform_update
 export -f perform_uninstall
 
-# --- 非安装模式下的主逻辑 ---
+# --- 主逻辑 ---
 if [ "$1" == "uninstall" ]; then
     perform_uninstall
 elif [ "$1" == "update" ]; then
     perform_update
 else
-    if [ ! -f "$SCRIPT_DIR/bot.py" ]; then
-        echo "未检测到机器人，正在自动下载安装..."
-        # 自动安装流程
-        if [ "$IS_ROOT" = "1" ]; then
-            INSTALL_PATH="$INSTALL_PATH_GLOBAL"
-            SHORTCUT="/usr/local/bin/qiandao-bot"
-        else
-            INSTALL_PATH="$INSTALL_PATH_LOCAL"
-            SHORTCUT=""
-        fi
-        rm -rf "$INSTALL_PATH"
-        git clone "$REPO_URL" "$INSTALL_PATH"
-        cd "$INSTALL_PATH"
-        python3 -m venv .venv
-        ./.venv/bin/python -m pip install --upgrade pip python-telegram-bot requests pyotp curl_cffi python-dotenv
-        read -p "请输入你的 Telegram Bot Token: " TOKEN < /dev/tty
-        read -p "请输入你的 Telegram Chat ID (管理员ID): " CHAT_ID < /dev/tty
-        sed -i "s/^TELEGRAM_BOT_TOKEN = .*/TELEGRAM_BOT_TOKEN = \"$TOKEN\"/" bot.py
-        sed -i "s/^TELEGRAM_CHAT_ID = .*/TELEGRAM_CHAT_ID = \"$CHAT_ID\"/" bot.py
-        chmod +x start.sh
-        if [ "$IS_ROOT" = "1" ]; then
-            ln -sf "$INSTALL_PATH/start.sh" "$SHORTCUT"
-            chmod +x "$SHORTCUT"
-            echo "✅ 全局命令已注册：qiandao-bot"
-        else
-            if ! grep -q "alias qiandao-bot=" ~/.bashrc; then
-                echo "$ALIAS_CMD" >> ~/.bashrc
-                echo "alias 已添加到 ~/.bashrc，请运行 source ~/.bashrc 后使用 qiandao-bot"
-            fi
-        fi
-        echo "✅ 安装完成！"
-        exec bash "$INSTALL_PATH/start.sh"
-        exit 0
-    fi
     run_management_menu
 fi 
