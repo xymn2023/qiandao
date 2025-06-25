@@ -7,34 +7,41 @@ echo "  Telegram 多功能签到机器人一键部署脚本"
 echo "  项目地址: https://github.com/xymn2023/qiandao"
 echo "=============================================="
 echo ""
-echo "本脚本将自动下载项目、创建虚拟环境、安装依赖并进行配置。"
-echo ""
 
-# --- 1. 下载项目 ---
-REPO_URL="https://github.com/xymn2023/qiandao.git"
-PROJECT_DIR="qiandao"
-
-if ! command -v git &> /dev/null; then
-    echo "错误：需要 'git' 来下载项目文件。请先安装git。"
-    echo "Debian/Ubuntu: sudo apt update && sudo apt install -y git"
-    echo "CentOS/RHEL: sudo yum install -y git"
-    exit 1
-fi
-
-if [ -d "$PROJECT_DIR" ]; then
-    echo "项目目录 '$PROJECT_DIR' 已存在，进入目录..."
+# --- 1. 项目准备：确保位于正确的项目目录 ---
+# 通过检查关键文件判断是否已在项目目录中
+if [ -f "bot.py" ] && [ -d "Acck" ]; then
+    echo "已在项目目录中: $(pwd)"
 else
-    echo "正在从 GitHub 克隆项目..."
-    git clone "$REPO_URL" "$PROJECT_DIR"
+    # 如果不在项目目录，则执行克隆或进入操作
+    echo "本脚本将自动下载项目、创建虚拟环境、安装依赖并进行配置。"
+    echo ""
+    REPO_URL="https://github.com/xymn2023/qiandao.git"
+    PROJECT_DIR="qiandao"
+
+    if ! command -v git &> /dev/null; then
+        echo "错误：需要 'git' 来下载项目文件。请先安装git。"
+        echo "Debian/Ubuntu: sudo apt update && sudo apt install -y git"
+        echo "CentOS/RHEL: sudo yum install -y git"
+        exit 1
+    fi
+
+    if [ -d "$PROJECT_DIR" ]; then
+        echo "项目目录 '$PROJECT_DIR' 已存在，进入目录..."
+    else
+        echo "正在从 GitHub 克隆项目..."
+        git clone "$REPO_URL" "$PROJECT_DIR"
+    fi
+
+    cd "$PROJECT_DIR" || exit
+    echo "项目文件已准备就绪，当前位于: $(pwd)"
 fi
+# --- 至此，脚本确保当前工作目录是项目根目录 ---
 
-cd "$PROJECT_DIR" || exit
-echo "项目文件已准备就绪，当前位于: $(pwd)"
 echo ""
-
 # --- 2. Python 和虚拟环境设置 ---
 echo "按任意键开始配置和安装..."
-read -n 1 -s -r
+read -n 1 -s -r < /dev/tty
 
 echo ""
 if command -v python3 &> /dev/null; then
@@ -68,8 +75,8 @@ fi
 
 # --- 4. 交互式输入 ---
 echo ""
-read -p "请输入你的 Telegram Bot Token: " TELEGRAM_BOT_TOKEN
-read -p "请输入你的 Telegram Chat ID (管理员ID): " TELEGRAM_CHAT_ID
+read -p "请输入你的 Telegram Bot Token: " TELEGRAM_BOT_TOKEN < /dev/tty
+read -p "请输入你的 Telegram Chat ID (管理员ID): " TELEGRAM_CHAT_ID < /dev/tty
 
 # --- 5. 自动写入 bot.py ---
 # 兼容Linux和macOS的sed命令
@@ -89,7 +96,7 @@ echo ""
 
 # --- 6. 询问是否运行项目 ---
 while true; do
-    read -p "是否现在启动机器人？(y/n): " yn
+    read -p "是否现在启动机器人？(y/n): " yn < /dev/tty
     case $yn in
         [Yy]* ) echo "正在启动机器人..."; $PYTHON_IN_VENV bot.py; break;;
         [Nn]* ) echo "安装完成，已退出脚本。如需启动，请进入 '$PROJECT_DIR' 目录后运行 'bash start.sh'。"; exit;;
