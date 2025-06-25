@@ -228,9 +228,38 @@ elif [ "$1" == "update" ]; then
     perform_update
 else
     if [ ! -f "$SCRIPT_DIR/bot.py" ]; then
-        echo "错误：机器人似乎未安装。"
-        echo "请先使用 'curl... | sudo bash -s install' 命令进行安装。"
-        exit 1
+        echo "未检测到机器人，正在自动下载安装..."
+        # 自动安装流程
+        if [ "$IS_ROOT" = "1" ]; then
+            INSTALL_PATH="$INSTALL_PATH_GLOBAL"
+            SHORTCUT="/usr/local/bin/qiandao-bot"
+        else
+            INSTALL_PATH="$INSTALL_PATH_LOCAL"
+            SHORTCUT=""
+        fi
+        rm -rf "$INSTALL_PATH"
+        git clone "$REPO_URL" "$INSTALL_PATH"
+        cd "$INSTALL_PATH"
+        python3 -m venv .venv
+        ./.venv/bin/python -m pip install --upgrade pip python-telegram-bot requests pyotp curl_cffi python-dotenv
+        read -p "请输入你的 Telegram Bot Token: " TOKEN < /dev/tty
+        read -p "请输入你的 Telegram Chat ID (管理员ID): " CHAT_ID < /dev/tty
+        sed -i "s/^TELEGRAM_BOT_TOKEN = .*/TELEGRAM_BOT_TOKEN = \"$TOKEN\"/" bot.py
+        sed -i "s/^TELEGRAM_CHAT_ID = .*/TELEGRAM_CHAT_ID = \"$CHAT_ID\"/" bot.py
+        chmod +x start.sh
+        if [ "$IS_ROOT" = "1" ]; then
+            ln -sf "$INSTALL_PATH/start.sh" "$SHORTCUT"
+            chmod +x "$SHORTCUT"
+            echo "✅ 全局命令已注册：qiandao-bot"
+        else
+            if ! grep -q "alias qiandao-bot=" ~/.bashrc; then
+                echo "$ALIAS_CMD" >> ~/.bashrc
+                echo "alias 已添加到 ~/.bashrc，请运行 source ~/.bashrc 后使用 qiandao-bot"
+            fi
+        fi
+        echo "✅ 安装完成！"
+        exec bash "$INSTALL_PATH/start.sh"
+        exit 0
     fi
     run_management_menu
 fi 
