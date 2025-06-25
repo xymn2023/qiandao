@@ -96,10 +96,61 @@ echo ""
 
 # --- 6. 询问是否运行项目 ---
 while true; do
-    read -p "是否现在启动机器人？(y/n): " yn < /dev/tty
-    case $yn in
-        [Yy]* ) echo "正在启动机器人..."; $PYTHON_IN_VENV bot.py; break;;
-        [Nn]* ) echo "安装完成，已退出脚本。如需启动，请进入 '$PROJECT_DIR' 目录后运行 'bash start.sh'。"; exit;;
-        * ) echo "请输入 y 或 n。";;
+    read -p "如何启动机器人？(y:前台运行, b:后台运行, n:退出): " ybn < /dev/tty
+    case $ybn in
+        [Yy]* )
+            echo "正在前台启动机器人 (按 Ctrl+C 退出)..."
+            $PYTHON_IN_VENV bot.py
+            break;;
+        [Bb]* )
+            echo "正在后台启动机器人..."
+            nohup $PYTHON_IN_VENV bot.py > bot.log 2>&1 &
+            PID=$!
+            sleep 2 # 等待一会，以便进程启动或失败
+
+            if ps -p $PID > /dev/null; then
+                echo "✅ 机器人已在后台启动成功 (PID: $PID)。"
+                echo "   - 要停止机器人, 请运行: kill $PID"
+                echo "   - 日志文件位于: $(pwd)/bot.log"
+                echo ""
+
+                while true; do
+                    read -p "请选择操作 [1: 查看实时日志, 2: 检查进程状态, 0: 退出]: " action < /dev/tty
+                    case $action in
+                        1)
+                            echo "--- 实时日志 (按 Ctrl+C 返回此菜单) ---"
+                            (trap 'echo -e "\n--- 已返回菜单 ---"; exit' INT; tail -f bot.log)
+                            echo ""
+                            ;;
+                        2)
+                            echo "--- 检查进程状态 ---"
+                            if ps -p $PID > /dev/null; then
+                                echo "✅ 进程 (PID: $PID) 正在运行中。"
+                                ps -p $PID -o comm,pid,etime,user
+                            else
+                                echo "❌ 进程 (PID: $PID) 已停止。请检查 'bot.log' 排查问题。"
+                            fi
+                            echo "--------------------"
+                            echo ""
+                            ;;
+                        0)
+                            echo "已退出管理脚本。机器人仍在后台运行。"
+                            exit 0
+                            ;;
+                        *)
+                            echo "无效输入，请输入 1, 2, 或 0。"
+                            ;;
+                    esac
+                done
+            else
+                echo "❌ 启动失败! 请检查 'bot.log' 获取详细错误信息。"
+                cat bot.log
+            fi
+            break;;
+        [Nn]* )
+            echo "安装完成，已退出脚本。如需启动，请进入项目目录后运行 'bash start.sh'。"
+            exit;;
+        * )
+            echo "请输入 y, b, 或 n。";;
     esac
 done 
