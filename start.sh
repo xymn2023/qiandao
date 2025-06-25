@@ -1,12 +1,14 @@
 #!/bin/bash
 set -e
 
-# ================== 服务管理器脚本 ==================
-#
+# ================== Telegram 多功能签到机器人 ==================
+#   Acck 和 Akile 两个平台的签到功能，一键脚本傻瓜式操作简单易上手  欢迎二开
 #   用作安装器: bash <(curl -fsSL https://raw.githubusercontent.com/xymn2023/qiandao/main/start.sh)
 #   用作管理器: qiandao-bot (或在项目目录中 bash start.sh)
-#
-# ====================================================
+#   Github地址：https://github.com/xymn2023/qiandao
+#   作者：https://github.com/xymn2023/
+#   灵感来自于：https://github.com/QiQuWa/QingLong
+# =============================================================
 
 REPO_URL="https://github.com/xymn2023/qiandao.git"
 INSTALL_PATH_GLOBAL="/opt/qiandao"
