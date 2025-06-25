@@ -8,6 +8,59 @@ set -e
 #
 # ====================================================
 
+REPO_URL="https://github.com/xymn2023/qiandao.git"
+INSTALL_PATH_GLOBAL="/opt/qiandao"
+INSTALL_PATH_LOCAL="$HOME/qiandao"
+ALIAS_CMD="alias qiandao-bot='bash $INSTALL_PATH_LOCAL/start.sh'"
+
+# 检查依赖
+for cmd in git python3 curl; do
+    if ! command -v $cmd &>/dev/null; then
+        echo "缺少依赖: $cmd，请先安装！"
+        exit 1
+    fi
+done
+
+# 判断是否root
+if [ "$(id -u)" -eq 0 ]; then
+    INSTALL_PATH="$INSTALL_PATH_GLOBAL"
+    SHORTCUT="/usr/local/bin/qiandao-bot"
+    IS_ROOT=1
+else
+    INSTALL_PATH="$INSTALL_PATH_LOCAL"
+    SHORTCUT=""
+    IS_ROOT=0
+fi
+
+# 自动安装（仅首次）
+if [ ! -d "$INSTALL_PATH" ]; then
+    echo "正在安装到 $INSTALL_PATH ..."
+    rm -rf "$INSTALL_PATH"
+    git clone "$REPO_URL" "$INSTALL_PATH"
+    cd "$INSTALL_PATH"
+    python3 -m venv .venv
+    ./.venv/bin/python -m pip install --upgrade pip python-telegram-bot requests pyotp curl_cffi python-dotenv
+    read -p "请输入你的 Telegram Bot Token: " TOKEN < /dev/tty
+    read -p "请输入你的 Telegram Chat ID (管理员ID): " CHAT_ID < /dev/tty
+    sed -i "s/^TELEGRAM_BOT_TOKEN = .*/TELEGRAM_BOT_TOKEN = \"$TOKEN\"/" bot.py
+    sed -i "s/^TELEGRAM_CHAT_ID = .*/TELEGRAM_CHAT_ID = \"$CHAT_ID\"/" bot.py
+    chmod +x start.sh
+    if [ "$IS_ROOT" = "1" ]; then
+        ln -sf "$INSTALL_PATH/start.sh" "$SHORTCUT"
+        chmod +x "$SHORTCUT"
+        echo "✅ 全局命令已注册：qiandao-bot"
+    else
+        # 添加 alias 到 .bashrc
+        if ! grep -q "alias qiandao-bot=" ~/.bashrc; then
+            echo "$ALIAS_CMD" >> ~/.bashrc
+            echo "alias 已添加到 ~/.bashrc，请运行 source ~/.bashrc 后使用 qiandao-bot"
+        fi
+    fi
+    echo "✅ 安装完成！"
+    # 进入管理菜单
+    bash start.sh
+    exit 0
+fi
 
 # --- 主逻辑：根据参数判断执行流程 ---
 # 此结构确保'install'模式下不会执行任何可能因管道执行而出错的路径检测
