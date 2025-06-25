@@ -1,7 +1,13 @@
 # ========== 重要配置 ==========
 # 请在下方填写你的 Telegram Bot Token 和 Chat ID
-TELEGRAM_BOT_TOKEN = "在这里填写你的Bot Token"
-TELEGRAM_CHAT_ID = "在这里填写你的Chat ID"
+from dotenv import load_dotenv
+import os
+load_dotenv()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    print("❌ 配置错误：请在项目根目录新建 .env 文件，并填写 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID")
+    exit(1)
 # ==============================
 
 import os

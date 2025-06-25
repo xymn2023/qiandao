@@ -42,8 +42,10 @@ if [ ! -d "$INSTALL_PATH" ]; then
     ./.venv/bin/python -m pip install --upgrade pip python-telegram-bot requests pyotp curl_cffi python-dotenv
     read -p "请输入你的 Telegram Bot Token: " TOKEN < /dev/tty
     read -p "请输入你的 Telegram Chat ID (管理员ID): " CHAT_ID < /dev/tty
-    sed -i "s/^TELEGRAM_BOT_TOKEN = .*/TELEGRAM_BOT_TOKEN = \"$TOKEN\"/" bot.py
-    sed -i "s/^TELEGRAM_CHAT_ID = .*/TELEGRAM_CHAT_ID = \"$CHAT_ID\"/" bot.py
+    cat > .env <<EOF
+TELEGRAM_BOT_TOKEN=$TOKEN
+TELEGRAM_CHAT_ID=$CHAT_ID
+EOF
     chmod +x start.sh
     if [ "$IS_ROOT" = "1" ]; then
         ln -sf "$INSTALL_PATH/start.sh" "$SHORTCUT"
