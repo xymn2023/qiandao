@@ -38,7 +38,7 @@
 脚本在安装过程中会提示用户输入Telegram Bot Token 和 Chat ID。
 
 ```
-curl -sSL https://raw.githubusercontent.com/xymn2023/qiandao/main/start.sh | sudo bash -s install
+    curl -sSL https://raw.githubusercontent.com/xymn2023/qiandao/main/start.sh | sudo bash -s install
 ```
 
 快捷管理
