@@ -84,6 +84,9 @@ run_management_menu() {
     done
 }
 
+# 将核心功能函数导出，确保在所有执行环境下都可见
+export -f perform_update
+export -f perform_uninstall
 
 # --- 主逻辑：根据参数判断执行流程 ---
 if [ "$1" == "install" ]; then
