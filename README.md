@@ -42,7 +42,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/xymn2023/qiandao/main/start.
 
 - 首次运行会自动下载项目、安装依赖、注册快捷命令，并提示输入 Bot Token 和 Chat ID。
 - 后续只需输入 `qiandao-bot`（全局）或 `bash start.sh`（本地）即可进入管理菜单。
-
+- 一键脚本默认安装在python虚拟环境下，避免不必要的错误。
 ---
 
 ## 三、配置方式（.env 文件）
