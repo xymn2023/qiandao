@@ -7,7 +7,7 @@ set -e
 #   用作管理器: qiandao-bot (或在项目目录中 bash start.sh)
 #   Github地址：https://github.com/xymn2023/qiandao
 #   作者：https://github.com/xymn2023/
-#   灵感来自于：https://github.com/QiQuWa/QingLong
+#   
 # =============================================================
 
 REPO_URL="https://github.com/xymn2023/qiandao.git"
