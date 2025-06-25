@@ -404,17 +404,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not can_use:
         await update.message.reply_text(f"今日使用次数已达上限（{get_daily_limit()}次），您已使用{current_usage}次，请明天再试。")
         return ConversationHandler.END
-    try:
-        chat_id_int = int(CHAT_ID)
-        if user_id != chat_id_int and user_id not in load_allowed_users():
-            await update.message.reply_text("您不是此Bot的创建者或授权用户，无法使用此功能。")
-            return ConversationHandler.END
-    except ValueError:
-        await update.message.reply_text("Chat ID格式错误，请联系管理员。")
-        return ConversationHandler.END
-    # 只显示欢迎和ID，不弹菜单
-    await update.message.reply_text(f"欢迎使用签到系统，你的ID为：{user_id}\n请输入命令或点击菜单按钮进行操作。\n如需帮助请输入 /help")
-    return ConversationHandler.END
+    
+    # 显示菜单并进入选择模块状态
+    keyboard = [['acck签到', 'akile签到']]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text(
+        f"欢迎使用签到系统，你的ID为：{user_id}\n请选择要签到的平台：",
+        reply_markup=reply_markup
+    )
+    return SELECT_MODULE
 
 async def select_module(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != 'private':
@@ -889,22 +887,42 @@ async def summary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_md(update.message.reply_text, text)
 
 async def acck_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Acck签到入口"""
     user_id = update.effective_user.id
-    if is_banned(user_id):
-        await send_md(update.message.reply_text, "您已被封禁，无法使用此Bot。")
-        return ConversationHandler.END
     if not is_allowed(user_id):
-        await send_md(update.message.reply_text, "您未被授权使用此Bot，请联系管理员。")
-        return ConversationHandler.END
-    can_use, current_usage = check_daily_limit(user_id)
+        await check_admin_and_warn(update, user_id, "/acck")
+        return
+    
+    if is_banned(user_id):
+        await update.message.reply_text("❌ 您已被封禁，无法使用此功能")
+        return
+    
+    can_use, usage = check_daily_limit(user_id)
     if not can_use:
-        await send_md(update.message.reply_text, f"今日使用次数已达上限（{get_daily_limit()}次），您已使用{current_usage}次，请明天再试。")
-        return ConversationHandler.END
-    await send_md(update.message.reply_text, "请输入账号：")
-    context.user_data['module'] = 'Acck'
-    context.user_data['step'] = 'username'
-    user_module[user_id] = 'acck签到'
-    return INPUT_USERNAME
+        await update.message.reply_text(f"❌ 您已达到每日使用限制 ({usage}/{get_daily_limit()})")
+        return
+    
+    # 检查是否已配置凭证
+    user_file = os.path.join("Acck", "users", f"{user_id}.json")
+    if os.path.exists(user_file):
+        # 直接执行签到
+        try:
+            with open(user_file, 'r', encoding='utf-8') as f:
+                user_info = json.load(f)
+            result = acck_signin(user_info['username'], user_info['password'], user_info.get('totp'))
+            increment_daily_usage(user_id)
+            record_usage(user_id)
+            await update.message.reply_text(f"✅ Acck签到结果:\n{result}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ 签到失败: {e}")
+    else:
+        # 引导用户配置
+        user_module[user_id] = 'acck签到'
+        await update.message.reply_text(
+            "📝 请配置您的Acck账号信息\n\n请输入您的邮箱:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return INPUT_USERNAME
 
 async def akile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Akile签到入口"""
@@ -1154,8 +1172,6 @@ def main():
         os.remove('.restarting')
     # 注册所有handler
     app.add_handler(CommandHandler('allow', allow_user))
-    app.add_handler(CommandHandler('acck', acck_entry))
-    app.add_handler(CommandHandler('akile', akile_entry))
     app.add_handler(CommandHandler('me', me_cmd))
     app.add_handler(CommandHandler('unbind', unbind_cmd))
     app.add_handler(CommandHandler('help', help_cmd))
@@ -1182,6 +1198,23 @@ def main():
     
     # 添加del命令的对话处理器
     app.add_handler(del_conv_handler)
+    
+    # 添加账号配置流程的对话处理器
+    conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler('start', start),
+            CommandHandler('acck', acck_entry),
+            CommandHandler('akile', akile_entry)
+        ],
+        states={
+            SELECT_MODULE: [MessageHandler(filters.Regex('^(acck签到|akile签到)$'), select_module)],
+            INPUT_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_username)],
+            INPUT_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_password)],
+            INPUT_TOTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_totp)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+    app.add_handler(conv_handler)
     
     # 启动定时任务调度器
     global task_scheduler
