@@ -105,9 +105,15 @@ if [ "$1" == "install" ]; then
     read -p "请输入你的 Telegram Chat ID (管理员ID): " CHAT_ID < /dev/tty
     sed -i "s/^TELEGRAM_BOT_TOKEN = .*/TELEGRAM_BOT_TOKEN = \"$TOKEN\"/" bot.py
     sed -i "s/^TELEGRAM_CHAT_ID = .*/TELEGRAM_CHAT_ID = \"$CHAT_ID\"/" bot.py
+    
+    # 赋予脚本执行权限
+    chmod +x "$INSTALL_PATH/start.sh"
+
     if [ "$(id -u)" -eq 0 ]; then
         ln -sf "$INSTALL_PATH/start.sh" /usr/local/bin/qiandao-bot
-        echo "✅ 已创建系统快捷命令 'qiandao-bot'。"
+        # 再次确认快捷命令也有执行权限
+        chmod +x /usr/local/bin/qiandao-bot
+        echo "✅ 已创建可执行的系统快捷命令 'qiandao-bot'。"
     fi
     echo "✅ 安装完成！正在进入管理菜单..."
     exec bash "$INSTALL_PATH/start.sh"
