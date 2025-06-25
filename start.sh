@@ -80,11 +80,27 @@ perform_uninstall() {
     read -p "确认要卸载吗？请输入 'yes' 继续: " confirm_uninstall < /dev/tty
     if [ "$confirm_uninstall" == "yes" ]; then
         echo "正在开始卸载..."
-        PID=$(find_bot_pid)
-        if [ -n "$PID" ]; then kill -9 "$PID"; fi
+        # 强力查杀所有bot.py相关进程，最多尝试3次
+        for i in 1 2 3; do
+            PIDS=$(ps aux | grep '[b]ot.py' | awk '{print $2}')
+            if [ -n "$PIDS" ]; then
+                echo "正在强制终止以下进程: $PIDS"
+                kill -9 $PIDS
+                sleep 1
+            else
+                break
+            fi
+        done
         if [ -L "/usr/local/bin/qiandao-bot" ]; then rm -f "/usr/local/bin/qiandao-bot"; fi
         if [ -d "$INSTALL_PATH" ]; then rm -rf "$INSTALL_PATH"; fi
-        echo "✅ 卸载完成。"
+        REMAIN=$(ps aux | grep '[b]ot.py' | grep -v grep)
+        if [ -n "$REMAIN" ]; then
+            echo "⚠️ 警告：仍有以下bot.py相关进程未被终止，请手动kill："
+            echo "$REMAIN"
+            echo "如遇极端情况，建议先用菜单停止机器人，再卸载。"
+        else
+            echo "✅ 卸载完成，所有相关进程已终止。"
+        fi
         exit 0
     else
         echo "卸载已取消。"
