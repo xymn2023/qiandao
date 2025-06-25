@@ -61,8 +61,13 @@ if [ ! -d "$INSTALL_PATH" ]; then
 fi
 
 # --- 全局变量 ---
-SCRIPT_REAL_PATH=$(readlink -f "${BASH_SOURCE[0]}")
-SCRIPT_DIR=$(dirname "$SCRIPT_REAL_PATH")
+# 修正 SCRIPT_DIR 兼容 bash <(curl ...) 场景
+if [[ -f "$INSTALL_PATH/start.sh" ]]; then
+    SCRIPT_DIR="$INSTALL_PATH"
+else
+    SCRIPT_REAL_PATH=$(readlink -f "${BASH_SOURCE[0]}")
+    SCRIPT_DIR=$(dirname "$SCRIPT_REAL_PATH")
+fi
 PYTHON_IN_VENV="$SCRIPT_DIR/.venv/bin/python"
 
 # --- 函数定义区 ---
