@@ -1,14 +1,12 @@
 #!/bin/bash
 set -e
 
-# ================== Telegram 多功能签到机器人 ==================
-#   Acck 和 Akile 两个平台的签到功能，一键脚本傻瓜式操作简单易上手  欢迎二开
+# ================== 服务管理器脚本 ==================
+#
 #   用作安装器: bash <(curl -fsSL https://raw.githubusercontent.com/xymn2023/qiandao/main/start.sh)
 #   用作管理器: qiandao-bot (或在项目目录中 bash start.sh)
-#   Github地址：https://github.com/xymn2023/qiandao
-#   作者：https://github.com/xymn2023/
-#   
-# =============================================================
+#
+# ====================================================
 
 REPO_URL="https://github.com/xymn2023/qiandao.git"
 INSTALL_PATH_GLOBAL="/opt/qiandao"
@@ -22,6 +20,21 @@ for cmd in git python3 curl; do
         exit 1
     fi
 done
+
+# 智能判断pip命令
+get_pip_command() {
+    if command -v pip3 &>/dev/null; then
+        echo "pip3"
+    elif command -v pip &>/dev/null; then
+        echo "pip"
+    else
+        echo "python3 -m pip"
+    fi
+}
+
+# 获取pip命令
+PIP_CMD=$(get_pip_command)
+echo "🔧 使用包管理器: $PIP_CMD"
 
 # 判断是否root
 if [ "$(id -u)" -eq 0 ]; then
@@ -41,7 +54,10 @@ if [ ! -d "$INSTALL_PATH" ]; then
     git clone "$REPO_URL" "$INSTALL_PATH"
     cd "$INSTALL_PATH"
     python3 -m venv .venv
-    ./.venv/bin/python -m pip install --upgrade pip python-telegram-bot requests pyotp curl_cffi python-dotenv
+    echo "📦 正在安装依赖包..."
+    ./.venv/bin/python -m pip install --upgrade pip
+    ./.venv/bin/python -m pip install -r requirements.txt
+    echo "✅ 依赖安装完成"
     read -p "请输入你的 Telegram Bot Token: " TOKEN < /dev/tty
     read -p "请输入你的 Telegram Chat ID (管理员ID): " CHAT_ID < /dev/tty
     cat > .env <<EOF
@@ -92,8 +108,10 @@ perform_update() {
             echo "警告：自动恢复本地更改时可能存在冲突。请手动检查并解决：git status"
         fi
         echo "✅ 更新完成。正在重新安装依赖..."
-        "$PYTHON_IN_VENV" -m pip install --upgrade pip python-telegram-bot requests pyotp curl_cffi python-dotenv
-        echo "依赖更新完成。"
+        echo "📦 正在更新依赖包..."
+        "$PYTHON_IN_VENV" -m pip install --upgrade pip
+        "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+        echo "✅ 依赖更新完成。"
     else
         echo "❌ 更新失败。请检查网络或git配置。"
     fi
@@ -133,6 +151,62 @@ perform_uninstall() {
     fi
 }
 
+perform_dependency_check() {
+    echo "--- 检查/修复依赖 ---"
+    cd "$SCRIPT_DIR" || exit
+    
+    if [ ! -f "requirements.txt" ]; then
+        echo "❌ requirements.txt 文件不存在"
+        return 1
+    fi
+    
+    echo "📋 检查依赖包状态..."
+    "$PYTHON_IN_VENV" -m pip check
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ 依赖包状态正常"
+    else
+        echo "⚠️ 发现依赖问题，正在修复..."
+        echo "📦 重新安装依赖包..."
+        "$PYTHON_IN_VENV" -m pip install --upgrade pip
+        "$PYTHON_IN_VENV" -m pip install -r requirements.txt --force-reinstall
+        echo "✅ 依赖修复完成"
+    fi
+    
+    echo "📊 已安装的依赖包："
+    "$PYTHON_IN_VENV" -m pip list | grep -E "(telegram|requests|pyotp|curl|dotenv|croniter)"
+    echo ""
+}
+
+install_dependencies() {
+    echo "--- 安装依赖 ---"
+    cd "$SCRIPT_DIR" || exit
+    
+    if [ ! -f "requirements.txt" ]; then
+        echo "❌ requirements.txt 文件不存在"
+        return 1
+    fi
+    
+    echo "📦 正在安装依赖包..."
+    echo "🔧 使用包管理器: $PIP_CMD"
+    
+    # 升级pip
+    "$PYTHON_IN_VENV" -m pip install --upgrade pip
+    
+    # 安装依赖
+    "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ 依赖安装成功"
+        echo "📊 已安装的依赖包："
+        "$PYTHON_IN_VENV" -m pip list | grep -E "(telegram|requests|pyotp|curl|dotenv|croniter)"
+    else
+        echo "❌ 依赖安装失败"
+        return 1
+    fi
+    echo ""
+}
+
 run_management_menu() {
     cd "$SCRIPT_DIR" || exit
     trap '' INT
@@ -146,7 +220,9 @@ run_management_menu() {
         echo " [3] 查看实时日志"
         echo " [4] 检查进程状态"
         echo " [5] 检查并安装更新"
-        echo " [6] 卸载机器人"
+        echo " [6] 检查/修复依赖"
+        echo " [7] 重新安装依赖"
+        echo " [8] 卸载机器人"
         echo " [0] 退出"
         read -p "请输入操作选项: " action < /dev/tty
         case $action in
@@ -184,7 +260,9 @@ run_management_menu() {
                 read -n 1 -s -r -p "按任意键返回菜单..." < /dev/tty
                 ;;
             5) perform_update ;;
-            6) perform_uninstall ;;
+            6) perform_dependency_check ;;
+            7) install_dependencies ;;
+            8) perform_uninstall ;;
             0) echo "已退出。" && trap - INT && exit 0 ;;
             *) echo "无效输入。" ;;
         esac
@@ -193,12 +271,18 @@ run_management_menu() {
 
 export -f perform_update
 export -f perform_uninstall
+export -f perform_dependency_check
+export -f install_dependencies
 
 # --- 主逻辑 ---
 if [ "$1" == "uninstall" ]; then
     perform_uninstall
 elif [ "$1" == "update" ]; then
     perform_update
+elif [ "$1" == "install-deps" ]; then
+    install_dependencies
+elif [ "$1" == "check-deps" ]; then
+    perform_dependency_check
 else
     run_management_menu
 fi 

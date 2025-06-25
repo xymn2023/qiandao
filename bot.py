@@ -14,16 +14,20 @@ import os
 import json
 import requests
 import subprocess
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import glob
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommand
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes
+    Application, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes, CallbackQueryHandler
 )
 from telegram.constants import ParseMode
 from Acck.qiandao import main as acck_signin
 from Akile.qiandao import main as akile_signin
 import sys
+import asyncio
+import threading
+import time
+from croniter import croniter
 
 # 数据文件
 ALLOWED_USERS_FILE = "allowed_users.json"
@@ -32,12 +36,25 @@ DAILY_USAGE_FILE = "daily_usage.json"
 USAGE_STATS_FILE = "usage_stats.json"
 ADMIN_LOG_FILE = "admin_log.json"
 ADMIN_ATTEMPT_FILE = "admin_attempts.json"
+SCHEDULED_TASKS_FILE = "scheduled_tasks.json"
 
 # 默认每日次数限制
 DEFAULT_DAILY_LIMIT = 3
 
 # 日志文件名格式
 LOG_TIME_FMT = '%Y-%m-%d_%H%M'
+
+# 推荐时间点
+RECOMMENDED_TIMES = [
+    (0, 0),   # 0:00
+    (0, 10),  # 0:10 (默认)
+    (0, 20),  # 0:20
+    (0, 30),  # 0:30
+    (1, 0),   # 1:00
+]
+
+# 默认时间
+DEFAULT_HOUR, DEFAULT_MINUTE = 0, 10
 
 # ========== 工具函数 ==========
 
@@ -144,6 +161,137 @@ def record_usage(user_id):
     stats[str(user_id)]["last"] = now
     save_usage_stats(stats)
 
+# 定时任务管理（新结构）
+def load_scheduled_tasks():
+    return load_json(SCHEDULED_TASKS_FILE, {})
+
+def save_scheduled_tasks(tasks):
+    save_json(SCHEDULED_TASKS_FILE, tasks)
+
+def add_scheduled_task(user_id, module, hour, minute):
+    tasks = load_scheduled_tasks()
+    task_id = f"{user_id}_{module}_{hour:02d}{minute:02d}"
+    task = {
+        "id": task_id,
+        "user_id": str(user_id),
+        "module": module,
+        "hour": hour,
+        "minute": minute,
+        "enabled": True,
+        "created_at": datetime.now().isoformat(),
+        "last_run": None
+    }
+    tasks[task_id] = task
+    save_scheduled_tasks(tasks)
+    return True, task_id
+
+def remove_scheduled_task(task_id, user_id):
+    tasks = load_scheduled_tasks()
+    if task_id not in tasks:
+        return False, "任务不存在"
+    task = tasks[task_id]
+    if str(task["user_id"]) != str(user_id) and not is_admin(int(user_id)):
+        return False, "无权限删除此任务"
+    del tasks[task_id]
+    save_scheduled_tasks(tasks)
+    return True, "任务已删除"
+
+def get_user_tasks(user_id):
+    tasks = load_scheduled_tasks()
+    return {tid: t for tid, t in tasks.items() if str(t["user_id"]) == str(user_id)}
+
+def parse_time_input(time_str):
+    """解析时间输入，支持 HH:MM 格式"""
+    try:
+        if ':' in time_str:
+            hour, minute = map(int, time_str.split(':'))
+        else:
+            hour, minute = map(int, time_str.split('.'))
+        
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return True, hour, minute
+        else:
+            return False, "时间格式错误：小时应在0-23之间，分钟应在0-59之间"
+    except:
+        return False, "时间格式错误：请使用 HH:MM 格式，如 8:30"
+
+# 定时任务执行器（新逻辑）
+class TaskScheduler:
+    def __init__(self, application):
+        self.application = application
+        self.running = False
+        self.thread = None
+    def start(self):
+        if self.running:
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._scheduler_loop, daemon=True)
+        self.thread.start()
+        print("✅ 定时任务调度器已启动")
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=5)
+        print("⏹️ 定时任务调度器已停止")
+    def _scheduler_loop(self):
+        while self.running:
+            try:
+                now = datetime.now()
+                tasks = load_scheduled_tasks()
+                for task in tasks.values():
+                    if not task.get("enabled", True):
+                        continue
+                    if now.hour == task["hour"] and now.minute == task["minute"]:
+                        self._execute_task(task)
+                time.sleep(60)
+            except Exception as e:
+                print(f"❌ 定时任务调度器错误: {e}")
+                time.sleep(60)
+    def _execute_task(self, task):
+        try:
+            print(f"🔄 执行定时任务: {task['module']} {task['hour']:02d}:{task['minute']:02d} (用户: {task['user_id']})")
+            user_id = int(task['user_id'])
+            if not is_allowed(user_id):
+                print(f"❌ 用户 {user_id} 无权限执行任务")
+                return
+            can_use, usage = check_daily_limit(user_id)
+            if not can_use:
+                print(f"❌ 用户 {user_id} 已达到每日使用限制")
+                return
+            module = task['module']
+            user_file = os.path.join(module, 'users', f"{user_id}.json")
+            if not os.path.exists(user_file):
+                print(f"❌ 用户 {user_id} 的 {module} 凭证不存在")
+                return
+            with open(user_file, 'r', encoding='utf-8') as f:
+                user_info = json.load(f)
+            if module == 'Acck':
+                result = acck_signin(user_info['username'], user_info['password'], user_info.get('totp'))
+            elif module == 'Akile':
+                result = akile_signin(user_info['username'], user_info['password'], user_info.get('totp'))
+            else:
+                print(f"❌ 未知模块: {module}")
+                return
+            increment_daily_usage(user_id)
+            record_usage(user_id)
+            task['last_run'] = datetime.now().isoformat()
+            save_scheduled_tasks(load_scheduled_tasks())
+            status = "✅ 成功" if ("成功" in result or "已签到" in result) else "❌ 失败"
+            message = f"🕐 定时任务执行结果\n\n平台: {module}\n时间: {task['hour']:02d}:{task['minute']:02d}\n状态: {status}\n结果: {result}"
+            asyncio.run_coroutine_threadsafe(
+                self.application.bot.send_message(
+                    chat_id=user_id,
+                    text=message,
+                    parse_mode=ParseMode.HTML
+                ),
+                self.application.loop
+            )
+            print(f"✅ 定时任务执行完成: {task['module']} {task['hour']:02d}:{task['minute']:02d}")
+        except Exception as e:
+            print(f"❌ 执行定时任务错误 {task['id']}: {e}")
+
+task_scheduler = None
+
 # 用户解绑
 
 def unbind_user(user_id):
@@ -155,9 +303,10 @@ def unbind_user(user_id):
 
 # 状态定义
 SELECT_MODULE, INPUT_USERNAME, INPUT_PASSWORD, INPUT_TOTP = range(4)
+INPUT_SCHEDULE_NAME, INPUT_SCHEDULE_CRON, INPUT_SCHEDULE_CONFIRM = range(4, 7)
 
 # 主菜单
-main_menu = [['acck签到', 'akile签到']]
+main_menu = [['acck签到', 'akile签到'], ['🕐 定时任务', '📊 我的统计']]
 
 # 各模块对应的目录和函数
 MODULES = {
@@ -167,6 +316,9 @@ MODULES = {
 
 # 记录用户当前操作的模块
 user_module = {}
+
+# 全局定时任务调度器
+task_scheduler = None
 
 def get_bot_owner_id(token):
     """获取Bot创建者的用户ID"""
@@ -755,48 +907,244 @@ async def acck_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return INPUT_USERNAME
 
 async def akile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Akile签到入口"""
     user_id = update.effective_user.id
-    if is_banned(user_id):
-        await send_md(update.message.reply_text, "您已被封禁，无法使用此Bot。")
-        return ConversationHandler.END
     if not is_allowed(user_id):
-        await send_md(update.message.reply_text, "您未被授权使用此Bot，请联系管理员。")
-        return ConversationHandler.END
-    can_use, current_usage = check_daily_limit(user_id)
+        await check_admin_and_warn(update, user_id, "/akile")
+        return
+    
+    if is_banned(user_id):
+        await update.message.reply_text("❌ 您已被封禁，无法使用此功能")
+        return
+    
+    can_use, usage = check_daily_limit(user_id)
     if not can_use:
-        await send_md(update.message.reply_text, f"今日使用次数已达上限（{get_daily_limit()}次），您已使用{current_usage}次，请明天再试。")
-        return ConversationHandler.END
-    await send_md(update.message.reply_text, "请输入账号：")
-    context.user_data['module'] = 'Akile'
-    context.user_data['step'] = 'username'
-    user_module[user_id] = 'akile签到'
-    return INPUT_USERNAME
+        await update.message.reply_text(f"❌ 您已达到每日使用限制 ({usage}/{get_daily_limit()})")
+        return
+    
+    # 检查是否已配置凭证
+    user_file = os.path.join("Akile", "users", f"{user_id}.json")
+    if os.path.exists(user_file):
+        # 直接执行签到
+        try:
+            with open(user_file, 'r', encoding='utf-8') as f:
+                user_info = json.load(f)
+            result = akile_signin(user_info['username'], user_info['password'], user_info.get('totp'))
+            increment_daily_usage(user_id)
+            record_usage(user_id)
+            await update.message.reply_text(f"✅ Akile签到结果:\n{result}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ 签到失败: {e}")
+    else:
+        # 引导用户配置
+        user_module[user_id] = 'Akile'
+        await update.message.reply_text(
+            "📝 请配置您的Akile账号信息\n\n请输入您的邮箱:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return INPUT_USERNAME
 
-def save_user_info(user_id, module, info):
-    """保存用户信息到对应模块的users目录"""
-    module_dir = module
-    users_dir = os.path.join(module_dir, 'users')
-    os.makedirs(users_dir, exist_ok=True)
-    user_file = os.path.join(users_dir, f"{user_id}.json")
-    with open(user_file, 'w', encoding='utf-8') as f:
-        json.dump(info, f, ensure_ascii=False, indent=2)
+# 定时任务相关命令
 
-# ConversationHandler只保留acck、akile相关状态
-conv_handler = ConversationHandler(
-    entry_points=[
-        CommandHandler('start', start),
-        CommandHandler('acck', acck_entry),
-        CommandHandler('akile', akile_entry),
-    ],
+async def schedule_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """定时任务管理入口"""
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        await check_admin_and_warn(update, user_id, "/schedule")
+        return
+    
+    if is_banned(user_id):
+        await update.message.reply_text("❌ 您已被封禁，无法使用此功能")
+        return
+    
+    keyboard = [
+        ['📅 添加定时任务', '📋 查看我的任务'],
+        ['❌ 删除定时任务', '🔙 返回主菜单']
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    
+    await update.message.reply_text(
+        "🕐 定时任务管理\n\n"
+        "• 📅 添加定时任务 - 设置自动签到时间\n"
+        "• 📋 查看我的任务 - 查看所有定时任务\n"
+        "• ❌ 删除定时任务 - 删除指定的定时任务\n"
+        "• 🔙 返回主菜单 - 返回主菜单",
+        reply_markup=reply_markup
+    )
+
+async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        await update.message.reply_text("❌ 您未被授权使用此功能")
+        return
+    
+    # 检查账号
+    has_acck = os.path.exists(os.path.join("Acck", "users", f"{user_id}.json"))
+    has_akile = os.path.exists(os.path.join("Akile", "users", f"{user_id}.json"))
+    if not has_acck and not has_akile:
+        await update.message.reply_text("❌ 您还没有配置任何账号信息，请先用 /acck 或 /akile 配置账号")
+        return
+    
+    # 平台选择
+    buttons = []
+    if has_acck:
+        buttons.append([InlineKeyboardButton("Acck", callback_data="add_acck")])
+    if has_akile:
+        buttons.append([InlineKeyboardButton("Akile", callback_data="add_akile")])
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text("请选择要添加定时任务的平台：", reply_markup=reply_markup)
+    return "ADD_SELECT_MODULE"
+
+async def add_select_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    module = "Acck" if query.data == "add_acck" else "Akile"
+    context.user_data['add_module'] = module
+    
+    # 推荐时间点选择 + 自定义时间
+    buttons = []
+    for hour, minute in RECOMMENDED_TIMES:
+        label = f"{hour:02d}:{minute:02d}"
+        if hour == DEFAULT_HOUR and minute == DEFAULT_MINUTE:
+            label += " (默认)"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"add_time_{hour}_{minute}")])
+    
+    # 添加自定义时间选项
+    buttons.append([InlineKeyboardButton("⏰ 自定义时间", callback_data="add_custom_time")])
+    
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await query.edit_message_text("请选择定时任务时间：", reply_markup=reply_markup)
+    return "ADD_SELECT_TIME"
+
+async def add_custom_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("请输入自定义时间（格式：HH:MM，如 8:30）：")
+    return "ADD_CUSTOM_TIME"
+
+async def add_custom_time_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    time_str = update.message.text.strip()
+    success, result = parse_time_input(time_str)
+    
+    if not success:
+        await update.message.reply_text(f"❌ {result}\n请重新输入时间（格式：HH:MM）：")
+        return "ADD_CUSTOM_TIME"
+    
+    hour, minute = result
+    module = context.user_data['add_module']
+    user_id = update.effective_user.id
+    
+    success, task_id = add_scheduled_task(user_id, module, hour, minute)
+    if success:
+        await update.message.reply_text(f"✅ 定时任务添加成功！\n平台: {module}\n时间: {hour:02d}:{minute:02d}\n任务ID: {task_id}")
+    else:
+        await update.message.reply_text(f"❌ 添加失败: {task_id}")
+    return ConversationHandler.END
+
+async def add_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "add_custom_time":
+        return await add_custom_time_input(update, context)
+    
+    data = query.data.split('_')
+    hour, minute = int(data[2]), int(data[3])
+    module = context.user_data['add_module']
+    user_id = update.effective_user.id
+    
+    success, task_id = add_scheduled_task(user_id, module, hour, minute)
+    if success:
+        await query.edit_message_text(f"✅ 定时任务添加成功！\n平台: {module}\n时间: {hour:02d}:{minute:02d}\n任务ID: {task_id}")
+    else:
+        await query.edit_message_text(f"❌ 添加失败: {task_id}")
+    return ConversationHandler.END
+
+# /del命令 - 删除定时任务
+async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        await update.message.reply_text("❌ 您未被授权使用此功能")
+        return
+    
+    tasks = get_user_tasks(user_id)
+    if not tasks:
+        await update.message.reply_text("📋 您还没有添加任何定时任务")
+        return
+    
+    # 构建删除选项
+    buttons = []
+    for task_id, task in tasks.items():
+        label = f"{task['module']} {task['hour']:02d}:{task['minute']:02d}"
+        buttons.append([InlineKeyboardButton(f"❌ {label}", callback_data=f"del_{task_id}")])
+    
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text("请选择要删除的定时任务：", reply_markup=reply_markup)
+    return "DEL_SELECT_TASK"
+
+async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    task_id = query.data.split('_', 1)[1]
+    user_id = update.effective_user.id
+    
+    success, result = remove_scheduled_task(task_id, user_id)
+    if success:
+        await query.edit_message_text(f"✅ 定时任务删除成功！\n{result}")
+    else:
+        await query.edit_message_text(f"❌ 删除失败: {result}")
+    return ConversationHandler.END
+
+# /all命令 - 查看所有定时任务
+async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        await update.message.reply_text("❌ 您未被授权使用此功能")
+        return
+    
+    tasks = get_user_tasks(user_id)
+    if not tasks:
+        await update.message.reply_text("📋 您还没有添加任何定时任务\n使用 /add 添加定时任务")
+        return
+    
+    message = "📋 您的定时任务列表：\n\n"
+    for task_id, task in tasks.items():
+        status = "✅ 启用" if task.get('enabled', True) else "❌ 禁用"
+        last_run = "从未运行"
+        if task.get('last_run'):
+            try:
+                last_run = datetime.fromisoformat(task['last_run']).strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                pass
+        
+        message += f"🔹 {task['module']} {task['hour']:02d}:{task['minute']:02d}\n"
+        message += f"   状态: {status}\n"
+        message += f"   最后运行: {last_run}\n"
+        message += f"   任务ID: {task_id}\n\n"
+    
+    await update.message.reply_text(message)
+
+# ConversationHandler注册
+add_conv_handler = ConversationHandler(
+    entry_points=[CommandHandler('add', add_cmd)],
     states={
-        SELECT_MODULE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_module)],
-        INPUT_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_username)],
-        INPUT_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_password)],
-        INPUT_TOTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_totp)],
+        "ADD_SELECT_MODULE": [CallbackQueryHandler(add_select_time, pattern="^add_(acck|akile)$")],
+        "ADD_SELECT_TIME": [CallbackQueryHandler(add_confirm, pattern="^add_time_\\d+_\\d+$|^add_custom_time$")],
+        "ADD_CUSTOM_TIME": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_time_confirm)],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
 )
 
+del_conv_handler = ConversationHandler(
+    entry_points=[CommandHandler('del', del_cmd)],
+    states={
+        "DEL_SELECT_TASK": [CallbackQueryHandler(del_confirm, pattern="^del_.*$")],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)],
+)
+
+# main函数注册
 def main():
     import sys
     TOKEN = TELEGRAM_BOT_TOKEN
@@ -851,7 +1199,62 @@ def main():
     app.add_handler(CommandHandler('menu', menu_cmd))
     app.add_handler(CommandHandler('summary', summary_cmd))
     
+    # 添加定时任务相关命令处理器
+    app.add_handler(CommandHandler('schedule', schedule_cmd))
+    app.add_handler(CommandHandler('addschedule', add_cmd))
+    app.add_handler(CommandHandler('listschedules', list_schedules_cmd))
+    app.add_handler(CommandHandler('deleteschedule', delete_schedule_cmd))
+    
+    # 添加新的定时任务命令处理器
+    app.add_handler(CommandHandler('add', add_cmd))
+    app.add_handler(CommandHandler('del', del_cmd))
+    app.add_handler(CommandHandler('all', all_cmd))
+    
+    # 添加定时任务相关的消息处理器
+    app.add_handler(MessageHandler(filters.Regex('^🕐 定时任务$'), schedule_cmd))
+    app.add_handler(MessageHandler(filters.Regex('^📅 添加定时任务$'), add_cmd))
+    app.add_handler(MessageHandler(filters.Regex('^📋 查看我的任务$'), list_schedules_cmd))
+    app.add_handler(MessageHandler(filters.Regex('^❌ 删除定时任务$'), delete_schedule_cmd))
+    app.add_handler(MessageHandler(filters.Regex('^🔙 返回主菜单$'), menu_cmd))
+    
+    # 添加定时任务配置的对话处理器
+    schedule_conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex('^📅 .*定时任务$'), input_schedule_name),
+        ],
+        states={
+            INPUT_SCHEDULE_CRON: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_schedule_cron)],
+            INPUT_SCHEDULE_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_schedule)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+    app.add_handler(schedule_conv_handler)
+    
+    # 添加删除定时任务的对话处理器
+    delete_schedule_conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex('^❌ .*定时任务$'), delete_schedule_cmd),
+        ],
+        states={
+            INPUT_SCHEDULE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_delete_schedule)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+    app.add_handler(delete_schedule_conv_handler)
+    
+    # 添加add命令的对话处理器
+    app.add_handler(add_conv_handler)
+    
+    # 添加del命令的对话处理器
+    app.add_handler(del_conv_handler)
+    
+    # 启动定时任务调度器
+    global task_scheduler
+    task_scheduler = TaskScheduler(app)
+    task_scheduler.start()
+    
     print('🚀 Bot已启动...')
+    print('🕐 定时任务调度器已启动...')
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
