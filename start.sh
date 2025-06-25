@@ -12,6 +12,24 @@ echo ""
 # 通过检查关键文件判断是否已在项目目录中
 if [ -f "bot.py" ] && [ -d "Acck" ]; then
     echo "已在项目目录中: $(pwd)"
+    read -p "发现现有项目。是否要检查更新？ (y/n): " confirm_update < /dev/tty
+    if [[ "$confirm_update" == [Yy]* ]]; then
+        echo "正在检查更新..."
+        git config --global --add safe.directory "$(pwd)"
+        echo "正在暂存本地更改以避免冲突..."
+        git stash push -m "autostash_by_script" >/dev/null
+        echo "正在从 GitHub 拉取最新版本..."
+        if git pull origin main; then
+            echo "正在恢复本地更改..."
+            if ! git stash pop >/dev/null 2>&1; then
+                echo "警告：自动恢复本地更改时可能存在冲突。请手动检查并解决：git status"
+            fi
+            echo "✅ 更新完成。"
+        else
+            echo "❌ 更新失败。请检查网络或git配置。"
+        fi
+        echo ""
+    fi
 else
     # 如果不在项目目录，则执行克隆或进入操作
     echo "本脚本将自动下载项目、创建虚拟环境、安装依赖并进行配置。"
@@ -104,9 +122,14 @@ while true; do
             break;;
         [Bb]* )
             echo "正在后台启动机器人..."
-            nohup $PYTHON_IN_VENV bot.py > bot.log 2>&1 &
+            # 使用 python -u 来禁用输出缓冲，确保日志实时写入
+            nohup $PYTHON_IN_VENV -u bot.py > bot.log 2>&1 &
             PID=$!
-            sleep 2 # 等待一会，以便进程启动或失败
+            # 使用 disown 彻底将进程与当前终端分离，防止脚本退出时进程被关闭
+            disown $PID
+
+            echo "等待2秒以检查启动状态..."
+            sleep 2
 
             if ps -p $PID > /dev/null; then
                 echo "✅ 机器人已在后台启动成功 (PID: $PID)。"
@@ -119,7 +142,12 @@ while true; do
                     case $action in
                         1)
                             echo "--- 实时日志 (按 Ctrl+C 返回此菜单) ---"
-                            (trap 'echo -e "\n--- 已返回菜单 ---"; exit' INT; tail -f bot.log)
+                            # 确保日志文件存在可读
+                            if [ -r "bot.log" ]; then
+                                (trap 'echo -e "\n--- 已返回菜单 ---"; exit' INT; tail -f bot.log)
+                            else
+                                echo "日志文件 bot.log 不存在或不可读。"
+                            fi
                             echo ""
                             ;;
                         2)
@@ -143,8 +171,10 @@ while true; do
                     esac
                 done
             else
-                echo "❌ 启动失败! 请检查 'bot.log' 获取详细错误信息。"
+                echo "❌ 启动失败! 以下是 'bot.log' 的内容:"
+                echo "-------------------- LOG START --------------------"
                 cat bot.log
+                echo "-------------------- LOG END ----------------------"
             fi
             break;;
         [Nn]* )
