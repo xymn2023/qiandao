@@ -1,6 +1,9 @@
 # Telegram 多功能签到机器人
 
+## 一、项目简介
+
 这是一个基于 `python-telegram-bot` 构建的多功能签到机器人，旨在集成并自动化多个网站的每日签到任务。项目目前已集成 `Acck` 和 `Akile` 两个平台的签到功能，并包含了一套完整的管理员与多用户权限管理系统。
+---
 
 ## ✨ 项目特色
 
@@ -29,99 +32,85 @@
     -   管理员的所有操作都会被记录在每日日志中 (`admin_log_YYYY-MM-DD_HHMM.json`)。
     -   管理员可通过 `/summary` 命令快速查看所有日志文件的概览。
 
-## 🚀 快速开始
+## 二、一键安装命令
 
+**推荐使用如下命令一键安装/管理（自动适配全局/本地）：**
 
-
-**一键脚本**--安装
-
-脚本在安装过程中会提示用户输入Telegram Bot Token 和 Chat ID。
-
-```
+```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/xymn2023/qiandao/main/start.sh)
 ```
 
-快捷管理
+- 首次运行会自动下载项目、安装依赖、注册快捷命令，并提示输入 Bot Token 和 Chat ID。
+- 后续只需输入 `qiandao-bot`（全局）或 `bash start.sh`（本地）即可进入管理菜单。
+
+---
+
+## 三、配置方式（.env 文件）
+
+### 1. 自动生成
+
+- 安装脚本会提示输入 Bot Token 和 Chat ID，并自动写入项目根目录的 `.env` 文件。
+
+### 2. 手动修改
+
+- 如需更换配置，直接编辑 `.env` 文件：
 
 ```
-qiandao-bot
+TELEGRAM_BOT_TOKEN=你的BotToken
+TELEGRAM_CHAT_ID=你的ChatID
 ```
 
-**手动安装**
+- **注意：** `.env` 文件不会被升级/重装/更新覆盖，配置永久有效。
 
-### 1. 环境准备
+---
 
--   Python 3.8+
--   `pip` 包管理器
+## 四、bot.py 自动读取配置
 
-### 2. 克隆项目
-
-```bash
-git clone https://github.com/xymn2023/qiandao.git
-cd qiandao
-```
-
-### 3. 安装依赖
-
-项目依赖 `python-telegram-bot` 和 `requests`。
-
-```bash
-pip install python-telegram-bot --upgrade
-pip install requests
-```
-
-### 4. 项目配置
-
-打开 `bot.py` 文件，在文件顶部的配置区填入你的信息：
+- `bot.py` 顶部自动加载 `.env` 文件，无需手动修改代码：
 
 ```python
-# ========== 重要配置 ==========
-# 请在下方填写你的 Telegram Bot Token 和 Chat ID
-TELEGRAM_BOT_TOKEN = "在这里填写你的Bot Token"
-TELEGRAM_CHAT_ID = "在这里填写你的Chat ID"  # 这是管理员的Telegram用户ID
-# ==============================
+from dotenv import load_dotenv
+import os
+load_dotenv()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    print("❌ 配置错误：请在项目根目录新建 .env 文件，并填写 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID")
+    exit(1)
 ```
 
--   `TELEGRAM_BOT_TOKEN`: 从 BotFather 获取你的机器人 Token。
--   `TELEGRAM_CHAT_ID`: 你的个人 Telegram 用户ID。这将是此机器人的唯一管理员。
+- **如缺少 .env 或配置为空，程序会自动报错并退出。**
 
-### 5. 运行机器人
+---
+更多功能具体以bot为准。
 
-配置完成后，在项目根目录下运行：
+## 五、升级/重装/迁移说明
 
-```bash
-python bot.py
-```
+- **升级/重装/拉取新代码时，.env 文件不会被覆盖，配置始终有效。**
+- 如需迁移到新服务器，只需拷贝 `.env` 文件和数据文件（如 allowed_users.json 等）即可。
+- 更换 Bot Token/Chat ID 只需编辑 `.env` 文件，无需修改任何代码。
 
-看到 "🚀 Bot已启动..." 字样，说明机器人已成功运行。
+---
 
-## 📝 命令列表
+## 六、常见问题与解决方案
 
-### 用户命令
+### 1. 启动时报"配置错误"
 
--   `/start`: 开始与机器人交互，并获取你的用户ID。
--   `/help`: 显示帮助信息和所有可用命令。
--   `/acck`: 开始 `Acck` 平台的签到流程。
--   `/akile`: 开始 `Akile` 平台的签到流程。
--   `/me`: 查询你的个人状态（身份、使用次数、累计签到等）。
--   `/unbind`: 清除你在服务器上保存的所有账号信息。
--   `/cancel`: 在任何对话流程中，取消当前操作。
+- 检查 `.env` 文件是否存在于项目根目录，内容是否填写正确。
 
-### 👑 管理员专用命令
+### 2. 如何更换 Bot Token 或 Chat ID？
 
--   `/allow <用户ID>`: 授权一个用户使用此机器人。
--   `/disallow <用户ID>`: 移除一个用户的授权。
--   `/ban <用户ID>`: 将一个用户加入黑名单，禁止其使用。
--   `/unban <用户ID>`: 将一个用户从黑名单中移除。
--   `/stats`: 查看所有用户的使用统计。
--   `/top`: 查看最活跃的用户排行榜。
--   `/broadcast <消息内容>`: 向所有已授权用户发送广播消息。
--   `/export`: 将所有用户凭证和统计数据导出为JSON文件。
--   `/setlimit <次数>`: 设置每个普通用户每日的签到次数上限。
--   `/summary`: 汇总并显示所有管理员操作日志。
--   `/menu`: 自动为机器人设置命令列表菜单。
--   `/restart`: **重启**机器人进程。
--   `/shutdown`: **关闭**机器人进程。
+- 直接编辑 `.env` 文件，保存后重启机器人即可。
+
+### 3. 更新代码后配置丢失？
+
+- **不会丢失**，.env 文件不会被覆盖。
+
+### 4. 依赖缺失或启动失败？
+
+- 进入管理菜单选择"检查并安装更新"，或手动激活虚拟环境后 `pip install -r requirements.txt`。
+
+---
 
 ## 📁 目录结构
 
@@ -143,3 +132,7 @@ python bot.py
 ## 📄 开源许可
 
 本项目采用 [MIT License](LICENSE) 开源。 
+- 如有问题可在 GitHub 提 issue 或联系开发者。
+
+---
+
