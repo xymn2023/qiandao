@@ -31,6 +31,22 @@
 
 ## 🚀 快速开始
 
+
+
+**一键脚本**
+
+脚本在安装过程中会提示用户输入Telegram Bot Token 和 Chat ID。
+
+```
+curl -sSL https://raw.githubusercontent.com/xymn2023/qiandao/main/start.sh | bash
+```
+
+
+
+
+
+**手动安装**
+
 ### 1. 环境准备
 
 -   Python 3.8+
@@ -39,8 +55,8 @@
 ### 2. 克隆项目
 
 ```bash
-git clone [你的GitHub项目URL]
-cd [你的项目目录]
+git clone https://github.com/xymn2023/qiandao.git
+cd qiandao
 ```
 
 ### 3. 安装依赖
