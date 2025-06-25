@@ -137,17 +137,22 @@ while true; do
                 echo "   - 日志文件位于: $(pwd)/bot.log"
                 echo ""
 
+                # 屏蔽Ctrl+C (SIGINT)，强制用户使用选项 0 退出
+                trap '' INT
+
                 while true; do
                     read -p "请选择操作 [1: 查看实时日志, 2: 检查进程状态, 0: 退出]: " action < /dev/tty
                     case $action in
                         1)
-                            echo "--- 实时日志 (按 Ctrl+C 返回此菜单) ---"
-                            # 确保日志文件存在可读
-                            if [ -r "bot.log" ]; then
-                                (trap 'echo -e "\n--- 已返回菜单 ---"; exit' INT; tail -f bot.log)
-                            else
-                                echo "日志文件 bot.log 不存在或不可读。"
-                            fi
+                            echo "--- 正在查看实时日志... 按任意键返回菜单 ---"
+                            # 在后台运行 tail -f
+                            tail -f bot.log &
+                            TAIL_PID=$!
+                            # 等待用户按键
+                            read -n 1 -s -r < /dev/tty
+                            # 杀死后台的 tail 进程
+                            kill $TAIL_PID
+                            echo -e "\n--- 已返回菜单 ---"
                             echo ""
                             ;;
                         2)
@@ -163,6 +168,8 @@ while true; do
                             ;;
                         0)
                             echo "已退出管理脚本。机器人仍在后台运行。"
+                            # 退出前恢复默认的信号处理
+                            trap - INT
                             exit 0
                             ;;
                         *)
