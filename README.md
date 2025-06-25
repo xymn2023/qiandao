@@ -41,7 +41,7 @@
 curl -sSL https://raw.githubusercontent.com/xymn2023/qiandao/main/start.sh | sudo bash -s install
 ```
 
-一键脚本--管理
+快捷管理
 
 ```
 qiandao-bot
