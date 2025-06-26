@@ -965,6 +965,23 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("请选择要添加定时任务的平台：", reply_markup=reply_markup)
     return "ADD_SELECT_MODULE"
 
+async def add_select_time(update, context, edit=False):
+    module = context.user_data['add_module']
+    buttons = []
+    for hour, minute in RECOMMENDED_TIMES:
+        label = f"{hour:02d}:{minute:02d}"
+        if hour == DEFAULT_HOUR and minute == DEFAULT_MINUTE:
+            label += " (默认)"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"add_time_{hour}_{minute}")])
+    buttons.append([InlineKeyboardButton("⏰ 自定义时间", callback_data="add_custom_time")])
+    reply_markup = InlineKeyboardMarkup(buttons)
+    # 判断是 callback_query 还是普通消息
+    if hasattr(update, 'callback_query') and update.callback_query:
+        await update.callback_query.edit_message_text("请选择定时任务时间：", reply_markup=reply_markup)
+    else:
+        await update.message.reply_text("请选择定时任务时间：", reply_markup=reply_markup)
+    return "ADD_SELECT_TIME"
+
 async def add_select_module(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -973,11 +990,10 @@ async def add_select_module(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(query.from_user.id)
     user_file = os.path.join(module, "users", f"{user_id}.json")
     if not os.path.exists(user_file):
-        # 未配置账号，进入账号配置流程
         await query.edit_message_text(f"请先配置{module}账号，输入账号：")
         return "ADD_INPUT_USERNAME"
     else:
-        # 已有账号，直接进入时间选择
+        # 这里直接调用 add_select_time 并 return 其结果
         return await add_select_time(update, context, edit=True)
 
 async def add_input_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1005,23 +1021,6 @@ async def add_input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"账号信息已保存，接下来请选择定时任务时间：")
     # 自动进入时间选择
     return await add_select_time(update, context, edit=False)
-
-# 时间选择逻辑（支持edit_message和新消息两种入口）
-async def add_select_time(update, context, edit=False):
-    module = context.user_data['add_module']
-    buttons = []
-    for hour, minute in RECOMMENDED_TIMES:
-        label = f"{hour:02d}:{minute:02d}"
-        if hour == DEFAULT_HOUR and minute == DEFAULT_MINUTE:
-            label += " (默认)"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"add_time_{hour}_{minute}")])
-    buttons.append([InlineKeyboardButton("⏰ 自定义时间", callback_data="add_custom_time")])
-    reply_markup = InlineKeyboardMarkup(buttons)
-    if edit and hasattr(update, 'callback_query'):
-        await update.callback_query.edit_message_text("请选择定时任务时间：", reply_markup=reply_markup)
-    else:
-        await update.message.reply_text("请选择定时任务时间：", reply_markup=reply_markup)
-    return "ADD_SELECT_TIME"
 
 # /del命令 - 删除定时任务
 async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
