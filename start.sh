@@ -13,6 +13,57 @@ INSTALL_PATH_GLOBAL="/opt/qiandao"
 INSTALL_PATH_LOCAL="$HOME/qiandao"
 ALIAS_CMD="alias qiandao-bot='bash $INSTALL_PATH_LOCAL/start.sh'"
 
+# 检查并安装虚拟环境支持
+check_and_install_venv() {
+    echo "🔍 检查虚拟环境支持..."
+    
+    # 检测系统类型
+    if [ -f /etc/debian_version ]; then
+        # Debian/Ubuntu 系统
+        if ! dpkg -l | grep -q "python3-venv"; then
+            echo "📦 检测到 Debian/Ubuntu 系统，正在安装 python3-venv..."
+            if command -v apt &>/dev/null; then
+                apt update
+                apt install -y python3-venv
+                echo "✅ python3-venv 安装完成"
+            else
+                echo "❌ 无法安装 python3-venv，请手动运行: sudo apt install python3-venv"
+                exit 1
+            fi
+        else
+            echo "✅ python3-venv 已安装"
+        fi
+    elif [ -f /etc/redhat-release ]; then
+        # CentOS/RHEL/Fedora 系统
+        if ! rpm -qa | grep -q "python3-venv"; then
+            echo "📦 检测到 CentOS/RHEL/Fedora 系统，正在安装 python3-venv..."
+            if command -v yum &>/dev/null; then
+                yum install -y python3-venv
+                echo "✅ python3-venv 安装完成"
+            elif command -v dnf &>/dev/null; then
+                dnf install -y python3-venv
+                echo "✅ python3-venv 安装完成"
+            else
+                echo "❌ 无法安装 python3-venv，请手动运行: sudo yum install python3-venv 或 sudo dnf install python3-venv"
+                exit 1
+            fi
+        else
+            echo "✅ python3-venv 已安装"
+        fi
+    else
+        # 其他系统，尝试检测 venv 模块
+        if ! python3 -c "import venv" 2>/dev/null; then
+            echo "⚠️ 无法自动检测系统类型，请手动安装 python3-venv"
+            echo "Debian/Ubuntu: sudo apt install python3-venv"
+            echo "CentOS/RHEL: sudo yum install python3-venv"
+            echo "Fedora: sudo dnf install python3-venv"
+            exit 1
+        else
+            echo "✅ 虚拟环境支持正常"
+        fi
+    fi
+}
+
 # 检查依赖
 for cmd in git python3 curl; do
     if ! command -v $cmd &>/dev/null; then
@@ -20,6 +71,9 @@ for cmd in git python3 curl; do
         exit 1
     fi
 done
+
+# 检查并安装虚拟环境支持
+check_and_install_venv
 
 # 智能判断pip命令
 get_pip_command() {
@@ -53,7 +107,16 @@ if [ ! -d "$INSTALL_PATH" ]; then
     rm -rf "$INSTALL_PATH"
     git clone "$REPO_URL" "$INSTALL_PATH"
     cd "$INSTALL_PATH"
-    python3 -m venv .venv
+    
+    # 创建虚拟环境
+    echo "🔧 正在创建虚拟环境..."
+    if python3 -m venv .venv; then
+        echo "✅ 虚拟环境创建成功"
+    else
+        echo "❌ 虚拟环境创建失败，请检查 python3-venv 是否正确安装"
+        exit 1
+    fi
+    
     echo "📦 正在安装依赖包..."
     ./.venv/bin/python -m pip install --upgrade pip
     ./.venv/bin/python -m pip install -r requirements.txt
@@ -90,9 +153,69 @@ else
 fi
 PYTHON_IN_VENV="$SCRIPT_DIR/.venv/bin/python"
 
+# 检查虚拟环境是否存在
+if [ ! -f "$PYTHON_IN_VENV" ]; then
+    echo "⚠️ 检测到虚拟环境不存在，正在重新创建..."
+    cd "$SCRIPT_DIR"
+    if python3 -m venv .venv; then
+        echo "✅ 虚拟环境重新创建成功"
+        echo "📦 正在重新安装依赖包..."
+        "$PYTHON_IN_VENV" -m pip install --upgrade pip
+        "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+        echo "✅ 依赖重新安装完成"
+    else
+        echo "❌ 虚拟环境创建失败，请检查 python3-venv 是否正确安装"
+        exit 1
+    fi
+fi
+
 # --- 函数定义区 ---
 find_bot_pid() {
     pgrep -f "$PYTHON_IN_VENV -u bot.py" || true
+}
+
+# 检查和修复虚拟环境
+check_and_fix_venv() {
+    echo "--- 检查/修复虚拟环境 ---"
+    cd "$SCRIPT_DIR" || exit
+    
+    if [ ! -f "$PYTHON_IN_VENV" ]; then
+        echo "⚠️ 检测到虚拟环境不存在，正在重新创建..."
+        if python3 -m venv .venv; then
+            echo "✅ 虚拟环境重新创建成功"
+            echo "📦 正在重新安装依赖包..."
+            "$PYTHON_IN_VENV" -m pip install --upgrade pip
+            "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+            echo "✅ 依赖重新安装完成"
+        else
+            echo "❌ 虚拟环境创建失败，请检查 python3-venv 是否正确安装"
+            return 1
+        fi
+    else
+        echo "✅ 虚拟环境存在"
+        
+        # 测试虚拟环境是否正常工作
+        if ! "$PYTHON_IN_VENV" -c "import sys; print('Python version:', sys.version)" 2>/dev/null; then
+            echo "⚠️ 虚拟环境可能损坏，正在重新创建..."
+            rm -rf .venv
+            if python3 -m venv .venv; then
+                echo "✅ 虚拟环境重新创建成功"
+                echo "📦 正在重新安装依赖包..."
+                "$PYTHON_IN_VENV" -m pip install --upgrade pip
+                "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+                echo "✅ 依赖重新安装完成"
+            else
+                echo "❌ 虚拟环境创建失败"
+                return 1
+            fi
+        else
+            echo "✅ 虚拟环境工作正常"
+        fi
+    fi
+    
+    echo "📊 虚拟环境信息："
+    "$PYTHON_IN_VENV" -c "import sys; print('Python 路径:', sys.executable); print('Python 版本:', sys.version)"
+    echo ""
 }
 
 perform_update() {
@@ -222,7 +345,8 @@ run_management_menu() {
         echo " [5] 检查并安装更新"
         echo " [6] 检查/修复依赖"
         echo " [7] 重新安装依赖"
-        echo " [8] 卸载机器人"
+        echo " [8] 检查/修复虚拟环境"
+        echo " [9] 卸载机器人"
         echo " [0] 退出"
         read -p "请输入操作选项: " action < /dev/tty
         case $action in
@@ -262,7 +386,8 @@ run_management_menu() {
             5) perform_update ;;
             6) perform_dependency_check ;;
             7) install_dependencies ;;
-            8) perform_uninstall ;;
+            8) check_and_fix_venv ;;
+            9) perform_uninstall ;;
             0) echo "已退出。" && trap - INT && exit 0 ;;
             *) echo "无效输入。" ;;
         esac
@@ -273,6 +398,7 @@ export -f perform_update
 export -f perform_uninstall
 export -f perform_dependency_check
 export -f install_dependencies
+export -f check_and_fix_venv
 
 # --- 主逻辑 ---
 if [ "$1" == "uninstall" ]; then
@@ -283,6 +409,8 @@ elif [ "$1" == "install-deps" ]; then
     install_dependencies
 elif [ "$1" == "check-deps" ]; then
     perform_dependency_check
+elif [ "$1" == "check-venv" ]; then
+    check_and_fix_venv
 else
     run_management_menu
 fi 
