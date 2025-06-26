@@ -312,6 +312,8 @@ main_menu = [['acck签到', 'akile签到'], ['🕐 定时任务', '📊 我的�
 MODULES = {
     'acck签到': ('Acck', acck_signin),
     'akile签到': ('Akile', akile_signin),
+    'Acck': ('Acck', acck_signin),
+    'Akile': ('Akile', akile_signin),
 }
 
 # 记录用户当前操作的模块
@@ -943,6 +945,7 @@ async def akile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"❌ 签到失败: {e}", reply_markup=ReplyKeyboardRemove())
     else:
+        # 首次配置，走账号配置流程，保存凭证
         user_module[user_id] = 'Akile'
         await update.message.reply_text(
             "📝 请配置您的Akile账号信息\n\n请输入您的邮箱:",
@@ -953,32 +956,59 @@ async def akile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 定时任务相关命令
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)  # 统一为str
-    if not is_allowed(user_id):
-        await update.message.reply_text("❌ 您未被授权使用此功能")
-        return
-    # 检查账号
-    has_acck = os.path.exists(os.path.join("Acck", "users", f"{user_id}.json"))
-    has_akile = os.path.exists(os.path.join("Akile", "users", f"{user_id}.json"))
-    if not has_acck and not has_akile:
-        await update.message.reply_text("❌ 您还没有配置任何账号信息，请先用 /acck 或 /akile 配置账号")
-        return
-    # 平台选择
-    buttons = []
-    if has_acck:
-        buttons.append([InlineKeyboardButton("Acck", callback_data="add_acck")])
-    if has_akile:
-        buttons.append([InlineKeyboardButton("Akile", callback_data="add_akile")])
+    user_id = str(update.effective_user.id)
+    buttons = [
+        [InlineKeyboardButton("Acck", callback_data="add_Acck")],
+        [InlineKeyboardButton("Akile", callback_data="add_Akile")]
+    ]
     reply_markup = InlineKeyboardMarkup(buttons)
     await update.message.reply_text("请选择要添加定时任务的平台：", reply_markup=reply_markup)
     return "ADD_SELECT_MODULE"
 
-async def add_select_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_select_module(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    module = "Acck" if query.data == "add_acck" else "Akile"
+    module = "Acck" if query.data == "add_Acck" else "Akile"
     context.user_data['add_module'] = module
-    # 推荐时间点选择 + 自定义时间
+    user_id = str(query.from_user.id)
+    user_file = os.path.join(module, "users", f"{user_id}.json")
+    if not os.path.exists(user_file):
+        # 未配置账号，进入账号配置流程
+        await query.edit_message_text(f"请先配置{module}账号，输入账号：")
+        return "ADD_INPUT_USERNAME"
+    else:
+        # 已有账号，直接进入时间选择
+        return await add_select_time(update, context, edit=True)
+
+async def add_input_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['add_username'] = update.message.text.strip()
+    await update.message.reply_text("请输入密码：")
+    return "ADD_INPUT_PASSWORD"
+
+async def add_input_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['add_password'] = update.message.text.strip()
+    await update.message.reply_text("如有TOTP验证码请输入，没有请回复'无'：")
+    return "ADD_INPUT_TOTP"
+
+async def add_input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    totp = update.message.text.strip()
+    if totp == '无':
+        totp = ''
+    module = context.user_data['add_module']
+    user_id = str(update.effective_user.id)
+    info = {
+        'username': context.user_data['add_username'],
+        'password': context.user_data['add_password'],
+        'totp': totp
+    }
+    save_user_info(user_id, module, info)
+    await update.message.reply_text(f"账号信息已保存，接下来请选择定时任务时间：")
+    # 自动进入时间选择
+    return await add_select_time(update, context, edit=False)
+
+# 时间选择逻辑（支持edit_message和新消息两种入口）
+async def add_select_time(update, context, edit=False):
+    module = context.user_data['add_module']
     buttons = []
     for hour, minute in RECOMMENDED_TIMES:
         label = f"{hour:02d}:{minute:02d}"
@@ -987,46 +1017,11 @@ async def add_select_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton(label, callback_data=f"add_time_{hour}_{minute}")])
     buttons.append([InlineKeyboardButton("⏰ 自定义时间", callback_data="add_custom_time")])
     reply_markup = InlineKeyboardMarkup(buttons)
-    await query.edit_message_text("请选择定时任务时间：", reply_markup=reply_markup)
+    if edit and hasattr(update, 'callback_query'):
+        await update.callback_query.edit_message_text("请选择定时任务时间：", reply_markup=reply_markup)
+    else:
+        await update.message.reply_text("请选择定时任务时间：", reply_markup=reply_markup)
     return "ADD_SELECT_TIME"
-
-async def add_custom_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("请输入自定义时间（格式：HH:MM，如 8:30）：")
-    return "ADD_CUSTOM_TIME"
-
-async def add_custom_time_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    time_str = update.message.text.strip()
-    result = parse_time_input(time_str)
-    if not result[0]:
-        await update.message.reply_text(f"❌ {result[2]}\n请重新输入时间（格式：HH:MM）：")
-        return "ADD_CUSTOM_TIME"
-    success, hour, minute = result
-    module = context.user_data['add_module']
-    user_id = str(update.effective_user.id)
-    success, task_id = add_scheduled_task(user_id, module, hour, minute)
-    if success:
-        await update.message.reply_text(f"✅ 定时任务添加成功！\n平台: {module}\n时间: {hour:02d}:{minute:02d}\n任务ID: {task_id}", reply_markup=ReplyKeyboardRemove())
-    else:
-        await update.message.reply_text(f"❌ 添加失败: {task_id}", reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
-
-async def add_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data == "add_custom_time":
-        return await add_custom_time_input(update, context)
-    data = query.data.split('_')
-    hour, minute = int(data[2]), int(data[3])
-    module = context.user_data['add_module']
-    user_id = str(update.effective_user.id)
-    success, task_id = add_scheduled_task(user_id, module, hour, minute)
-    if success:
-        await query.edit_message_text(f"✅ 定时任务添加成功！\n平台: {module}\n时间: {hour:02d}:{minute:02d}\n任务ID: {task_id}", reply_markup=ReplyKeyboardRemove())
-    else:
-        await query.edit_message_text(f"❌ 添加失败: {task_id}", reply_markup=ReplyKeyboardRemove())
-    return ConversationHandler.END
 
 # /del命令 - 删除定时任务
 async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1093,11 +1088,50 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
 
+# 1. add_confirm
+async def add_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "add_custom_time":
+        await query.edit_message_text("请输入自定义时间（格式：HH:MM，如 8:30）：")
+        return "ADD_CUSTOM_TIME"
+    # 推荐时间
+    data = query.data.split('_')
+    hour, minute = int(data[2]), int(data[3])
+    module = context.user_data['add_module']
+    user_id = str(query.from_user.id)
+    success, task_id = add_scheduled_task(user_id, module, hour, minute)
+    if success:
+        await query.edit_message_text(f"✅ 定时任务添加成功！\n平台: {module}\n时间: {hour:02d}:{minute:02d}\n任务ID: {task_id}", reply_markup=ReplyKeyboardRemove())
+    else:
+        await query.edit_message_text(f"❌ 添加失败: {task_id}", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
+# 2. add_custom_time_confirm
+async def add_custom_time_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    time_str = update.message.text.strip()
+    result = parse_time_input(time_str)
+    if not result[0]:
+        await update.message.reply_text(f"❌ {result[2]}\n请重新输入时间（格式：HH:MM）：")
+        return "ADD_CUSTOM_TIME"
+    success, hour, minute = result
+    module = context.user_data['add_module']
+    user_id = str(update.effective_user.id)
+    success, task_id = add_scheduled_task(user_id, module, hour, minute)
+    if success:
+        await update.message.reply_text(f"✅ 定时任务添加成功！\n平台: {module}\n时间: {hour:02d}:{minute:02d}\n任务ID: {task_id}", reply_markup=ReplyKeyboardRemove())
+    else:
+        await update.message.reply_text(f"❌ 添加失败: {task_id}", reply_markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
 # ConversationHandler注册
 add_conv_handler = ConversationHandler(
     entry_points=[CommandHandler('add', add_cmd)],
     states={
-        "ADD_SELECT_MODULE": [CallbackQueryHandler(add_select_time, pattern="^add_(acck|akile)$")],
+        "ADD_SELECT_MODULE": [CallbackQueryHandler(add_select_module, pattern="^add_(Acck|Akile)$")],
+        "ADD_INPUT_USERNAME": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_username)],
+        "ADD_INPUT_PASSWORD": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_password)],
+        "ADD_INPUT_TOTP": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_totp)],
         "ADD_SELECT_TIME": [CallbackQueryHandler(add_confirm, pattern="^add_time_\\d+_\\d+$|^add_custom_time$")],
         "ADD_CUSTOM_TIME": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_time_confirm)],
     },
