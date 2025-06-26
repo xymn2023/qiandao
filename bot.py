@@ -405,34 +405,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"今日使用次数已达上限（{get_daily_limit()}次），您已使用{current_usage}次，请明天再试。")
         return ConversationHandler.END
     
-    # 显示菜单并进入选择模块状态
-    keyboard = [['acck签到', 'akile签到']]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    # 直接提示输入平台
     await update.message.reply_text(
-        f"欢迎使用签到系统，你的ID为：{user_id}\n请选择要签到的平台：",
-        reply_markup=reply_markup
+        f"欢迎使用签到系统，你的ID为：{user_id}\n请输入要签到的平台(acck签到 或 akile签到)：",
+        reply_markup=ReplyKeyboardRemove()
     )
     return SELECT_MODULE
 
 async def select_module(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != 'private':
-        await send_md(update.message.reply_text, "请在与Bot的私聊中使用本功能。")
+        await send_md(update.message.reply_text, "请在与Bot的私聊中使用本功能。", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     user_id = update.effective_user.id
     if not is_allowed(user_id):
-        await send_md(update.message.reply_text, "您不是此Bot的管理员或授权用户，请联系管理员授权后再使用。")
+        await send_md(update.message.reply_text, "您不是此Bot的管理员或授权用户，请联系管理员授权后再使用。", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     can_use, current_usage = check_daily_limit(user_id)
     if not can_use:
-        await send_md(update.message.reply_text, f"今日使用次数已达上限（{get_daily_limit()}次），您已使用{current_usage}次，请明天再试。")
+        await send_md(update.message.reply_text, f"今日使用次数已达上限（{get_daily_limit()}次），您已使用{current_usage}次，请明天再试。", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     text = update.message.text
     if text not in MODULES:
-        await send_md(update.message.reply_text, "请选择菜单中的功能。")
+        await send_md(update.message.reply_text, "请输入平台名称：acck签到 或 akile签到。", reply_markup=ReplyKeyboardRemove())
         return SELECT_MODULE
-    
     user_module[user_id] = text
-    await send_md(update.message.reply_text, "请输入账号：")
+    await send_md(update.message.reply_text, "请输入账号：", reply_markup=ReplyKeyboardRemove())
     return INPUT_USERNAME
 
 async def input_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -444,7 +441,7 @@ async def input_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['username'] = update.message.text
     context.user_data['password'] = ''
     context.user_data['totp'] = ''
-    await send_md(update.message.reply_text, "请输入密码：")
+    await send_md(update.message.reply_text, "请输入密码：", reply_markup=ReplyKeyboardRemove())
     return INPUT_PASSWORD
 
 async def input_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -456,7 +453,7 @@ async def input_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_md(update.message.reply_text, "您不是此Bot的管理员或授权用户，请联系管理员授权后再使用。")
         return ConversationHandler.END
     context.user_data['password'] = update.message.text
-    await send_md(update.message.reply_text, "是否有TOTP二步验证？有请输入验证码，没有请回复'无'：")
+    await send_md(update.message.reply_text, "是否有TOTP二步验证？有请输入验证码，没有请回复'无'：", reply_markup=ReplyKeyboardRemove())
     return INPUT_TOTP
 
 async def input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -498,7 +495,7 @@ async def input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         result_msg = f"{module_dir} 执行结果：\n{result}\n\n今日已使用：{new_usage}/{get_daily_limit()}次"
         
-    await update.message.reply_text(result_msg)
+    await update.message.reply_text(result_msg, reply_markup=ReplyKeyboardRemove())
     
     # 清理本次会话的用户数据
     context.user_data.clear()
@@ -564,12 +561,12 @@ async def me_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
     status.append(f"累计签到：{count} 次")
     status.append(f"最后签到时间：{last}")
-    await update.message.reply_text("\n".join(status))
+    await update.message.reply_text("\n".join(status), reply_markup=ReplyKeyboardRemove())
 
 async def unbind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     unbind_user(user_id)
-    await update.message.reply_text("您的所有账号信息已清除。")
+    await update.message.reply_text("您的所有账号信息已清除。", reply_markup=ReplyKeyboardRemove())
 
 # ========== 管理员命令 ==========
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -589,7 +586,7 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     banned.add(target_id)
     save_banned_users(banned)
     log_admin_action("ban", f"封禁用户 {target_id}")
-    await update.message.reply_text(f"已封禁用户 {target_id}")
+    await update.message.reply_text(f"已封禁用户 {target_id}", reply_markup=ReplyKeyboardRemove())
 
 async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -609,9 +606,9 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_banned_users(banned)
         log_admin_action("unban", f"解封用户 {target_id}")
         log_admin_action_daily(user_id, 'unban', context.args, f"解封用户 {target_id}")
-        await update.message.reply_text(f"已解封用户 {target_id}")
+        await update.message.reply_text(f"已解封用户 {target_id}", reply_markup=ReplyKeyboardRemove())
     else:
-        await update.message.reply_text(f"用户 {target_id} 不在黑名单。")
+        await update.message.reply_text(f"用户 {target_id} 不在黑名单。", reply_markup=ReplyKeyboardRemove())
 
 async def disallow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -631,17 +628,19 @@ async def disallow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         allowed.remove(target_id)
         save_allowed_users(allowed)
         log_admin_action("disallow", f"移除白名单用户 {target_id}")
-        await update.message.reply_text(f"已移除白名单用户 {target_id}")
+        await update.message.reply_text(f"已移除白名单用户 {target_id}", reply_markup=ReplyKeyboardRemove())
     else:
-        await update.message.reply_text(f"用户 {target_id} 不在白名单。")
+        await update.message.reply_text(f"用户 {target_id} 不在白名单。", reply_markup=ReplyKeyboardRemove())
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id):
-        await send_md(update.message.reply_text, "只有管理员才能查看统计。"); return
+        await send_md(update.message.reply_text, "只有管理员才能查看统计。", reply_markup=ReplyKeyboardRemove())
+        return
     stats = load_usage_stats() or {}
     if not stats:
-        await send_md(update.message.reply_text, "暂无任何用户统计数据。"); return
+        await send_md(update.message.reply_text, "暂无任何用户统计数据。", reply_markup=ReplyKeyboardRemove())
+        return
     
     msg = ["`用户ID         | 累计 | 最后签到时间`"]
     for uid, info in stats.items():
@@ -660,7 +659,7 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
         msg.append(f"`{uid:<14}` | *{count:<4}* | `{last}`")
         
-    await send_md(update.message.reply_text, "\n".join(msg))
+    await send_md(update.message.reply_text, "\n".join(msg), reply_markup=ReplyKeyboardRemove())
 
 async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -677,7 +676,7 @@ async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = ["*活跃用户排行 (前10)*"]
     for i, (uid, info) in enumerate(top_users, 1):
         msg.append(f"`{i}`. `{uid}` - *{info.get('count', 0)}* 次")
-    await send_md(update.message.reply_text, "\n".join(msg))
+    await send_md(update.message.reply_text, "\n".join(msg), reply_markup=ReplyKeyboardRemove())
 
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -697,7 +696,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_file = f"broadcast_{now.strftime(LOG_TIME_FMT)}.txt"
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(f"{now.isoformat()} 管理员{user_id} 广播: {msg}\n")
-    await update.message.reply_text(f"广播已发送，记录于{log_file}。")
+    await update.message.reply_text(f"广播已发送，记录于{log_file}。", reply_markup=ReplyKeyboardRemove())
     log_admin_action_daily(user_id, 'broadcast', context.args, f"广播内容见{log_file}")
 
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -716,7 +715,7 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     export_file = f"export_{now.strftime(LOG_TIME_FMT)}.json"
     with open(export_file, "w", encoding="utf-8") as f:
         json.dump(export, f, ensure_ascii=False, indent=2)
-    await update.message.reply_text(f"数据已导出到 {export_file}。")
+    await update.message.reply_text(f"数据已导出到 {export_file}。", reply_markup=ReplyKeyboardRemove())
     log_admin_action_daily(user_id, 'export', [], f"导出到{export_file}")
 
 async def setlimit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -730,7 +729,7 @@ async def setlimit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         limit = int(context.args[0])
         save_json("limit_config.json", {"limit": limit})
-        await update.message.reply_text(f"已设置每日签到次数上限为 {limit} 次。")
+        await update.message.reply_text(f"已设置每日签到次数上限为 {limit} 次。", reply_markup=ReplyKeyboardRemove())
         log_admin_action("setlimit", f"设置每日签到次数上限为 {limit}")
     except Exception:
         await update.message.reply_text("参数错误。")
@@ -740,7 +739,7 @@ async def restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id):
         await update.message.reply_text("只有管理员才能重启Bot。")
         return
-    await update.message.reply_text("Bot正在重启...")
+    await update.message.reply_text("Bot正在重启...", reply_markup=ReplyKeyboardRemove())
     log_admin_action("restart", "管理员触发重启")
     # 创建重启标记文件
     with open('.restarting', 'w') as f:
@@ -754,7 +753,7 @@ async def shutdown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(user_id):
         await update.message.reply_text("只有管理员才能关闭Bot。")
         return
-    await update.message.reply_text("Bot即将关闭...")
+    await update.message.reply_text("Bot即将关闭...", reply_markup=ReplyKeyboardRemove())
     log_admin_action("shutdown", "关闭Bot")
     os._exit(0)
 
@@ -782,7 +781,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/shutdown - 关闭Bot\n"
         "/menu - 获取/刷新命令菜单\n"
     )
-    await update.message.reply_text(help_text)
+    await update.message.reply_text(help_text, reply_markup=ReplyKeyboardRemove())
 
 # ========== 注册命令 ==========
 
@@ -817,7 +816,8 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ 已自动为Bot设置命令菜单！所有用户输入 / 均可见全部命令（Telegram API限制）。\n\n"
         "如需手动设置，也可复制以下内容粘贴到BotFather：\n\n"
-        f"{botfather_text}"
+        f"{botfather_text}",
+        reply_markup=ReplyKeyboardRemove()
     )
 
 # ========== 非管理员尝试管理命令计数与自动拉黑 ==========
@@ -839,9 +839,9 @@ def check_admin_and_warn(update, user_id, command):
             banned = load_banned_users()
             banned.add(user_id)
             save_banned_users(banned)
-            update.message.reply_text(f"你不是管理员，已被自动拉黑。请勿反复尝试管理命令。")
+            update.message.reply_text(f"你不是管理员，已被自动拉黑。请勿反复尝试管理命令。", reply_markup=ReplyKeyboardRemove())
         else:
-            update.message.reply_text(f"你不是管理员，无权使用此命令。警告 {count}/3，超过3次将被拉黑。")
+            update.message.reply_text(f"你不是管理员，无权使用此命令。警告 {count}/3，超过3次将被拉黑。", reply_markup=ReplyKeyboardRemove())
         return False
     return True
 
@@ -892,31 +892,25 @@ async def acck_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(user_id):
         await check_admin_and_warn(update, user_id, "/acck")
         return
-    
     if is_banned(user_id):
-        await update.message.reply_text("❌ 您已被封禁，无法使用此功能")
+        await update.message.reply_text("❌ 您已被封禁，无法使用此功能", reply_markup=ReplyKeyboardRemove())
         return
-    
     can_use, usage = check_daily_limit(user_id)
     if not can_use:
-        await update.message.reply_text(f"❌ 您已达到每日使用限制 ({usage}/{get_daily_limit()})")
+        await update.message.reply_text(f"❌ 您已达到每日使用限制 ({usage}/{get_daily_limit()})", reply_markup=ReplyKeyboardRemove())
         return
-    
-    # 检查是否已配置凭证
     user_file = os.path.join("Acck", "users", f"{user_id}.json")
     if os.path.exists(user_file):
-        # 直接执行签到
         try:
             with open(user_file, 'r', encoding='utf-8') as f:
                 user_info = json.load(f)
             result = acck_signin(user_info['username'], user_info['password'], user_info.get('totp'))
             increment_daily_usage(user_id)
             record_usage(user_id)
-            await update.message.reply_text(f"✅ Acck签到结果:\n{result}")
+            await update.message.reply_text(f"✅ Acck签到结果:\n{result}", reply_markup=ReplyKeyboardRemove())
         except Exception as e:
-            await update.message.reply_text(f"❌ 签到失败: {e}")
+            await update.message.reply_text(f"❌ 签到失败: {e}", reply_markup=ReplyKeyboardRemove())
     else:
-        # 引导用户配置
         user_module[user_id] = 'acck签到'
         await update.message.reply_text(
             "📝 请配置您的Acck账号信息\n\n请输入您的邮箱:",
@@ -930,31 +924,25 @@ async def akile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(user_id):
         await check_admin_and_warn(update, user_id, "/akile")
         return
-    
     if is_banned(user_id):
-        await update.message.reply_text("❌ 您已被封禁，无法使用此功能")
+        await update.message.reply_text("❌ 您已被封禁，无法使用此功能", reply_markup=ReplyKeyboardRemove())
         return
-    
     can_use, usage = check_daily_limit(user_id)
     if not can_use:
-        await update.message.reply_text(f"❌ 您已达到每日使用限制 ({usage}/{get_daily_limit()})")
+        await update.message.reply_text(f"❌ 您已达到每日使用限制 ({usage}/{get_daily_limit()})", reply_markup=ReplyKeyboardRemove())
         return
-    
-    # 检查是否已配置凭证
     user_file = os.path.join("Akile", "users", f"{user_id}.json")
     if os.path.exists(user_file):
-        # 直接执行签到
         try:
             with open(user_file, 'r', encoding='utf-8') as f:
                 user_info = json.load(f)
             result = akile_signin(user_info['username'], user_info['password'], user_info.get('totp'))
             increment_daily_usage(user_id)
             record_usage(user_id)
-            await update.message.reply_text(f"✅ Akile签到结果:\n{result}")
+            await update.message.reply_text(f"✅ Akile签到结果:\n{result}", reply_markup=ReplyKeyboardRemove())
         except Exception as e:
-            await update.message.reply_text(f"❌ 签到失败: {e}")
+            await update.message.reply_text(f"❌ 签到失败: {e}", reply_markup=ReplyKeyboardRemove())
     else:
-        # 引导用户配置
         user_module[user_id] = 'Akile'
         await update.message.reply_text(
             "📝 请配置您的Akile账号信息\n\n请输入您的邮箱:",
@@ -965,18 +953,16 @@ async def akile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 定时任务相关命令
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    user_id = str(update.effective_user.id)  # 统一为str
     if not is_allowed(user_id):
         await update.message.reply_text("❌ 您未被授权使用此功能")
         return
-    
     # 检查账号
     has_acck = os.path.exists(os.path.join("Acck", "users", f"{user_id}.json"))
     has_akile = os.path.exists(os.path.join("Akile", "users", f"{user_id}.json"))
     if not has_acck and not has_akile:
         await update.message.reply_text("❌ 您还没有配置任何账号信息，请先用 /acck 或 /akile 配置账号")
         return
-    
     # 平台选择
     buttons = []
     if has_acck:
@@ -992,7 +978,6 @@ async def add_select_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     module = "Acck" if query.data == "add_acck" else "Akile"
     context.user_data['add_module'] = module
-    
     # 推荐时间点选择 + 自定义时间
     buttons = []
     for hour, minute in RECOMMENDED_TIMES:
@@ -1000,10 +985,7 @@ async def add_select_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if hour == DEFAULT_HOUR and minute == DEFAULT_MINUTE:
             label += " (默认)"
         buttons.append([InlineKeyboardButton(label, callback_data=f"add_time_{hour}_{minute}")])
-    
-    # 添加自定义时间选项
     buttons.append([InlineKeyboardButton("⏰ 自定义时间", callback_data="add_custom_time")])
-    
     reply_markup = InlineKeyboardMarkup(buttons)
     await query.edit_message_text("请选择定时任务时间：", reply_markup=reply_markup)
     return "ADD_SELECT_TIME"
@@ -1017,39 +999,33 @@ async def add_custom_time_input(update: Update, context: ContextTypes.DEFAULT_TY
 async def add_custom_time_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_str = update.message.text.strip()
     result = parse_time_input(time_str)
-    
     if not result[0]:
         await update.message.reply_text(f"❌ {result[2]}\n请重新输入时间（格式：HH:MM）：")
         return "ADD_CUSTOM_TIME"
-    
     success, hour, minute = result
     module = context.user_data['add_module']
-    user_id = update.effective_user.id
-    
+    user_id = str(update.effective_user.id)
     success, task_id = add_scheduled_task(user_id, module, hour, minute)
     if success:
-        await update.message.reply_text(f"✅ 定时任务添加成功！\n平台: {module}\n时间: {hour:02d}:{minute:02d}\n任务ID: {task_id}")
+        await update.message.reply_text(f"✅ 定时任务添加成功！\n平台: {module}\n时间: {hour:02d}:{minute:02d}\n任务ID: {task_id}", reply_markup=ReplyKeyboardRemove())
     else:
-        await update.message.reply_text(f"❌ 添加失败: {task_id}")
+        await update.message.reply_text(f"❌ 添加失败: {task_id}", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 async def add_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     if query.data == "add_custom_time":
         return await add_custom_time_input(update, context)
-    
     data = query.data.split('_')
     hour, minute = int(data[2]), int(data[3])
     module = context.user_data['add_module']
-    user_id = update.effective_user.id
-    
+    user_id = str(update.effective_user.id)
     success, task_id = add_scheduled_task(user_id, module, hour, minute)
     if success:
-        await query.edit_message_text(f"✅ 定时任务添加成功！\n平台: {module}\n时间: {hour:02d}:{minute:02d}\n任务ID: {task_id}")
+        await query.edit_message_text(f"✅ 定时任务添加成功！\n平台: {module}\n时间: {hour:02d}:{minute:02d}\n任务ID: {task_id}", reply_markup=ReplyKeyboardRemove())
     else:
-        await query.edit_message_text(f"❌ 添加失败: {task_id}")
+        await query.edit_message_text(f"❌ 添加失败: {task_id}", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 # /del命令 - 删除定时任务
@@ -1083,9 +1059,9 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     success, result = remove_scheduled_task(task_id, user_id)
     if success:
-        await query.edit_message_text(f"✅ 定时任务删除成功！\n{result}")
+        await query.edit_message_text(f"✅ 定时任务删除成功！\n{result}", reply_markup=ReplyKeyboardRemove())
     else:
-        await query.edit_message_text(f"❌ 删除失败: {result}")
+        await query.edit_message_text(f"❌ 删除失败: {result}", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 # /all命令 - 查看所有定时任务
@@ -1115,7 +1091,7 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += f"   最后运行: {last_run}\n"
         message += f"   任务ID: {task_id}\n\n"
     
-    await update.message.reply_text(message)
+    await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
 
 # ConversationHandler注册
 add_conv_handler = ConversationHandler(
