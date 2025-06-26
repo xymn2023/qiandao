@@ -1127,7 +1127,7 @@ async def add_custom_time_confirm(update: Update, context: ContextTypes.DEFAULT_
 add_conv_handler = ConversationHandler(
     entry_points=[CommandHandler('add', add_cmd)],
     states={
-        "ADD_SELECT_MODULE": [CallbackQueryHandler(add_select_module, pattern="^add_(Acck|Akile)$")],
+        "ADD_SELECT_MODULE": [CallbackQueryHandler(add_select_module, pattern="^add_.*$")],
         "ADD_INPUT_USERNAME": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_username)],
         "ADD_INPUT_PASSWORD": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_password)],
         "ADD_INPUT_TOTP": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_totp)],
