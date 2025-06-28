@@ -167,6 +167,7 @@ if [ ! -d "$INSTALL_PATH" ]; then
     echo "📦 正在安装依赖包..."
     ./.venv/bin/python -m pip install --upgrade pip
     ./.venv/bin/python -m pip install -r requirements.txt
+    ./.venv/bin/python -m pip install "python-telegram-bot[job-queue]"
     echo "✅ 依赖安装完成"
     read -p "请输入你的 Telegram Bot Token: " TOKEN < /dev/tty
     read -p "请输入你的 Telegram Chat ID (管理员ID): " CHAT_ID < /dev/tty
@@ -209,6 +210,7 @@ if [ ! -f "$PYTHON_IN_VENV" ]; then
         echo "📦 正在重新安装依赖包..."
         "$PYTHON_IN_VENV" -m pip install --upgrade pip
         "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+        "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
         echo "✅ 依赖重新安装完成"
     else
         echo "❌ 虚拟环境创建失败，请检查 python3-venv 是否正确安装"
@@ -233,6 +235,7 @@ check_and_fix_venv() {
             echo "📦 正在重新安装依赖包..."
             "$PYTHON_IN_VENV" -m pip install --upgrade pip
             "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+            "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
             echo "✅ 依赖重新安装完成"
         else
             echo "❌ 虚拟环境创建失败，请检查 python3-venv 是否正确安装"
@@ -250,6 +253,7 @@ check_and_fix_venv() {
                 echo "📦 正在重新安装依赖包..."
                 "$PYTHON_IN_VENV" -m pip install --upgrade pip
                 "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+                "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
                 echo "✅ 依赖重新安装完成"
             else
                 echo "❌ 虚拟环境创建失败"
@@ -281,6 +285,7 @@ perform_update() {
         echo "📦 正在更新依赖包..."
         "$PYTHON_IN_VENV" -m pip install --upgrade pip
         "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+        "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
         echo "✅ 依赖更新完成。"
     else
         echo "❌ 更新失败。请检查网络或git配置。"
@@ -340,6 +345,7 @@ perform_dependency_check() {
         echo "📦 重新安装依赖包..."
         "$PYTHON_IN_VENV" -m pip install --upgrade pip
         "$PYTHON_IN_VENV" -m pip install -r requirements.txt --force-reinstall
+        "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
         echo "✅ 依赖修复完成"
     fi
     
@@ -365,6 +371,7 @@ install_dependencies() {
     
     # 安装依赖
     "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+    "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
     
     if [ $? -eq 0 ]; then
         echo "✅ 依赖安装成功"

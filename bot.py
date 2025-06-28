@@ -59,6 +59,10 @@ USAGE_STATS_FILE = "usage_stats.json"
 ADMIN_LOG_FILE = "admin_log.json"
 ADMIN_ATTEMPT_FILE = "admin_attempts.json"
 SCHEDULED_TASKS_FILE = "scheduled_tasks.json"
+TEMP_USERS_FILE = "temp_users.json"
+USER_LIMITS_FILE = "user_limits.json"
+SUMMARY_LOG_FILE = "summary_log.json"
+SUMMARY_SIGNIN_FILE = "summary_signin.json"
 
 # 默认每日次数限制
 DEFAULT_DAILY_LIMIT = 3
@@ -138,39 +142,31 @@ def save_daily_usage(usage_data):
 def is_admin(user_id):
     return str(user_id) == str(TELEGRAM_CHAT_ID)
 
-def is_allowed(user_id):
-    return is_admin(user_id) or user_id in load_allowed_users()
-
 def is_banned(user_id):
     return user_id in load_banned_users()
 
-# 每日次数限制
+def is_allowed(user_id):
+    # 只要不是黑名单都允许使用
+    return not is_banned(user_id)
 
-def get_daily_limit():
+# 用户专属签到次数管理
+def load_user_limits():
+    return load_json(USER_LIMITS_FILE, {})
+def save_user_limits(data):
+    save_json(USER_LIMITS_FILE, data)
+
+def get_daily_limit(user_id=None):
+    # 优先查用户专属次数
+    if user_id is not None:
+        user_limits = load_user_limits()
+        if str(user_id) in user_limits:
+            return user_limits[str(user_id)]
+        if is_temp_user(user_id):
+            return 1
+        if is_whitelist(user_id):
+            return 5
     stats = load_json("limit_config.json", {})
     return stats.get("limit", DEFAULT_DAILY_LIMIT)
-
-def check_daily_limit(user_id):
-    if is_admin(user_id):
-        return True, 0
-    today = date.today().isoformat()
-    usage_data = load_daily_usage()
-    if today not in usage_data:
-        usage_data[today] = {}
-    user_usage = usage_data[today].get(str(user_id), 0)
-    return user_usage < get_daily_limit(), user_usage
-
-def increment_daily_usage(user_id):
-    if is_admin(user_id):
-        return
-    today = date.today().isoformat()
-    usage_data = load_daily_usage()
-    if today not in usage_data:
-        usage_data[today] = {}
-    if str(user_id) not in usage_data[today]:
-        usage_data[today][str(user_id)] = 0
-    usage_data[today][str(user_id)] += 1
-    save_daily_usage(usage_data)
 
 # 统计记录
 
@@ -303,8 +299,8 @@ class TaskScheduler:
         try:
             print(f"🔄 执行定时任务: {task['module']} {task['hour']:02d}:{task['minute']:02d} (用户: {task['user_id']}, 账号: {task['username']})")
             user_id = int(task['user_id'])
-            if not is_allowed(user_id):
-                print(f"❌ 用户 {user_id} 无权限执行任务")
+            if is_banned(user_id):
+                print(f"❌ 用户 {user_id} 已达到每日使用限制")
                 return
             can_use, usage = check_daily_limit(user_id)
             if not can_use:
@@ -317,13 +313,13 @@ class TaskScheduler:
                 err_msg = f"❌ 用户 {user_id} 的 {module} 账号 {username} 凭证不存在"
                 print(err_msg)
                 save_task_log(module, username, 'error', '凭证不存在', error=err_msg)
-                asyncio.run_coroutine_threadsafe(
+                # 用主线程事件循环安全推送消息
+                self.application.create_task(
                     self.application.bot.send_message(
                         chat_id=user_id,
                         text=err_msg,
                         parse_mode=ParseMode.HTML
-                    ),
-                    self.application.loop
+                    )
                 )
                 return
             with open(user_file, 'r', encoding='utf-8') as f:
@@ -342,25 +338,25 @@ class TaskScheduler:
                 status = "success" if ("成功" in result or "已签到" in result) else "error"
                 message = f"🕐 定时任务执行结果\n\n平台: {module}\n账号: {username}\n时间: {task['hour']:02d}:{task['minute']:02d}\n状态: {'✅ 成功' if status=='success' else '❌ 失败'}\n结果: {result}"
                 save_task_log(module, username, status, result)
-                asyncio.run_coroutine_threadsafe(
+                # 用主线程事件循环安全推送消息
+                self.application.create_task(
                     self.application.bot.send_message(
                         chat_id=user_id,
                         text=message,
                         parse_mode=ParseMode.HTML
-                    ),
-                    self.application.loop
+                    )
                 )
                 print(f"✅ 定时任务执行完成: {task['module']} {task['hour']:02d}:{task['minute']:02d} 账号: {username}")
             except Exception as e:
                 err_msg = f"❌ 执行定时任务错误 {task['id']}: {e}"
                 save_task_log(module, username, 'error', '执行任务异常', error=str(e))
-                asyncio.run_coroutine_threadsafe(
+                # 用主线程事件循环安全推送消息
+                self.application.create_task(
                     self.application.bot.send_message(
                         chat_id=user_id,
                         text=err_msg,
                         parse_mode=ParseMode.HTML
-                    ),
-                    self.application.loop
+                    )
                 )
                 print(err_msg)
         except Exception as e:
@@ -464,16 +460,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("请在与Bot的私聊中使用本功能。")
         return ConversationHandler.END
     user_id = update.effective_user.id
-    TOKEN = TELEGRAM_BOT_TOKEN
-    CHAT_ID = TELEGRAM_CHAT_ID
-    if TOKEN == '在这里填写你的Bot Token' and CHAT_ID == '在这里填写你的Chat ID':
-        pass
-    elif TOKEN == '在这里填写你的Bot Token' or CHAT_ID == '在这里填写你的Chat ID':
-        await update.message.reply_text("Bot Token或Chat ID配置错误，请联系管理员。")
-        return ConversationHandler.END
-    is_valid, message = verify_bot_owner(TOKEN, CHAT_ID)
-    if not is_valid:
-        await update.message.reply_text(f"验证失败：{message}")
+    if is_banned(user_id):
+        await update.message.reply_text("您已被拉黑，无法使用本Bot。")
         return ConversationHandler.END
     if not is_allowed(user_id):
         await update.message.reply_text("您不是此Bot的管理员或授权用户，请联系管理员授权后再使用。")
@@ -495,7 +483,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • `/akile` - Akile平台签到  
 • `/add` - 添加定时任务
 • `/del` - 删除定时任务
-• `/all` - 查看所有定时任务
+• `/list` - 查看所有定时任务
 • `/me` - 查看个人信息
 • `/help` - 查看帮助信息
 
@@ -516,46 +504,48 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def select_module(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != 'private':
-        await send_md(update.message.reply_text, "请在与Bot的私聊中使用本功能。", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("请在与Bot的私聊中使用本功能。")
         return ConversationHandler.END
     user_id = update.effective_user.id
-    if not is_allowed(user_id):
-        await send_md(update.message.reply_text, "您不是此Bot的管理员或授权用户，请联系管理员授权后再使用。", reply_markup=ReplyKeyboardRemove())
+    if is_banned(user_id):
+        await update.message.reply_text("您已被拉黑，无法使用本Bot。")
         return ConversationHandler.END
     can_use, current_usage = check_daily_limit(user_id)
     if not can_use:
-        await send_md(update.message.reply_text, f"今日使用次数已达上限（{get_daily_limit()}次），您已使用{current_usage}次，请明天再试。", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(f"今日使用次数已达上限（{get_daily_limit()}次），您已使用{current_usage}次，请明天再试。")
         return ConversationHandler.END
     text = update.message.text
     if text not in MODULES:
-        await send_md(update.message.reply_text, "请输入平台名称：acck签到 或 akile签到。", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("请输入平台名称：acck签到 或 akile签到。")
         return SELECT_MODULE
     user_module[user_id] = text
-    await send_md(update.message.reply_text, "请输入账号：", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("请输入账号：")
     return INPUT_USERNAME
 
 async def input_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != 'private':
-        await send_md(update.message.reply_text, "请在与Bot的私聊中使用本功能。"); return ConversationHandler.END
+        await update.message.reply_text("请在与Bot的私聊中使用本功能。")
+        return ConversationHandler.END
     user_id = update.effective_user.id
-    if not is_allowed(user_id):
-        await send_md(update.message.reply_text, "您不是此Bot的管理员或授权用户，请联系管理员授权后再使用。"); return ConversationHandler.END
+    if is_banned(user_id):
+        await update.message.reply_text("您已被拉黑，无法使用本Bot。")
+        return ConversationHandler.END
     context.user_data['username'] = update.message.text
     context.user_data['password'] = ''
     context.user_data['totp'] = ''
-    await send_md(update.message.reply_text, "请输入密码：", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("请输入密码：")
     return INPUT_PASSWORD
 
 async def input_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != 'private':
-        await send_md(update.message.reply_text, "请在与Bot的私聊中使用本功能。")
+        await update.message.reply_text("请在与Bot的私聊中使用本功能。")
         return ConversationHandler.END
     user_id = update.effective_user.id
-    if not is_allowed(user_id):
-        await send_md(update.message.reply_text, "您不是此Bot的管理员或授权用户，请联系管理员授权后再使用。")
+    if is_banned(user_id):
+        await update.message.reply_text("您已被拉黑，无法使用本Bot。")
         return ConversationHandler.END
     context.user_data['password'] = update.message.text
-    await send_md(update.message.reply_text, "是否有TOTP二步验证？有请输入验证码，没有请回复'无'：", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("是否有TOTP二步验证？有请输入验证码，没有请回复'无'：")
     return INPUT_TOTP
 
 async def input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -563,8 +553,9 @@ async def input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("请在与Bot的私聊中使用本功能。")
         return ConversationHandler.END
     user_id = update.effective_user.id
-    if not is_allowed(user_id):
-        await update.message.reply_text("您不是此Bot的管理员或授权用户，请联系管理员授权后再使用。"); return ConversationHandler.END
+    if is_banned(user_id):
+        await update.message.reply_text("您已被拉黑，无法使用本Bot。")
+        return ConversationHandler.END
     
     totp = update.message.text.strip()
     context.user_data['totp'] = totp if totp != '无' else ''
@@ -616,7 +607,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 管理员授权命令
 async def allow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not check_admin_and_warn(update, user_id, 'allow'):
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'allow')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     if not context.args:
         await update.message.reply_text("用法：/allow <用户ID>")
@@ -633,10 +626,20 @@ async def allow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_admin_action_daily(user_id, 'allow', context.args, f"授权用户 {target_id}")
 
 # ========== 用户自助命令 ==========
+async def send_and_auto_delete(message_func, text, context, delay=30, **kwargs):
+    msg = await message_func(text, **kwargs)
+    print(f"[DEBUG] 已发送消息，chat_id={msg.chat_id}, message_id={msg.message_id}, 内容={text}")
+    async def _auto_delete():
+        await asyncio.sleep(delay)
+        try:
+            await context.bot.delete_message(chat_id=msg.chat_id, message_id=msg.message_id)
+            print(f"[DEBUG] 已自动撤回消息 chat_id={msg.chat_id}, message_id={msg.message_id}")
+        except Exception as e:
+            print(f"[ERROR] 自动撤回失败: chat_id={msg.chat_id}, message_id={msg.message_id}, 错误: {e}")
+    asyncio.create_task(_auto_delete())
+
 async def me_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
-    # 检查是否是首次使用（通过检查是否有启动提示记录）
     if not context.user_data.get('bot_started'):
         context.user_data['bot_started'] = True
         status_msg = f"""🤖 **机器人状态确认**
@@ -647,37 +650,40 @@ async def me_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ---
 💡 机器人已准备就绪，开始处理您的请求..."""
-        await update.message.reply_text(status_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
-    
+        await send_and_auto_delete(update.message.reply_text, status_msg, context, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
     status = []
     if is_admin(user_id):
         status.append("身份：管理员")
-    elif is_banned(user_id):
-        status.append("身份：黑名单用户")
-    elif is_allowed(user_id):
+    elif is_whitelist(user_id):
         status.append("身份：白名单用户")
+    elif is_temp_user(user_id):
+        status.append("身份：临时用户")
     else:
-        status.append("身份：未授权用户")
-    can_use, current_usage = check_daily_limit(user_id)
-    status.append(f"今日已用：{current_usage}/{get_daily_limit()}次")
+        status.append("身份：普通用户")
+    can_use, current_usage = check_daily_limit(user_id), 0
+    today = date.today().isoformat()
+    usage_data = load_daily_usage()
+    if today in usage_data and str(user_id) in usage_data[today]:
+        current_usage = usage_data[today][str(user_id)]
+    user_limits = load_user_limits()
+    if str(user_id) in user_limits:
+        status.append(f"专属每日签到上限：{user_limits[str(user_id)]} 次")
+    else:
+        status.append(f"每日签到上限：{get_daily_limit(user_id)} 次（全局默认）")
+    status.append(f"今日已用：{current_usage}/{get_daily_limit(user_id)}次")
     stats_all = load_usage_stats() or {}
     stats = stats_all.get(str(user_id), {})
     count = stats.get("count", 0)
     last = stats.get("last", "无记录")
-    
-    # 兼容并格式化旧的时间格式
     if last != "无记录":
         try:
-            # 尝试解析ISO格式
             last_dt = datetime.fromisoformat(last)
             last = last_dt.strftime('%Y-%m-%d %H:%M:%S')
         except ValueError:
-            # 如果已经是新格式或其他格式，则直接使用
             pass
-            
     status.append(f"累计签到：{count} 次")
     status.append(f"最后签到时间：{last}")
-    await update.message.reply_text("\n".join(status), reply_markup=ReplyKeyboardRemove())
+    await send_and_auto_delete(update.message.reply_text, "\n".join(status), context, reply_markup=ReplyKeyboardRemove())
 
 async def unbind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -687,8 +693,9 @@ async def unbind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== 管理员命令 ==========
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("只有管理员才能封禁用户。")
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'ban')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     if not context.args:
         await update.message.reply_text("用法：/ban <用户ID>")
@@ -706,7 +713,9 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not check_admin_and_warn(update, user_id, 'unban'):
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'unban')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     if not context.args:
         await update.message.reply_text("用法：/unban <用户ID>")
@@ -720,16 +729,18 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if target_id in banned:
         banned.remove(target_id)
         save_banned_users(banned)
+        add_temp_user(target_id)  # 记录为临时用户
         log_admin_action("unban", f"解封用户 {target_id}")
         log_admin_action_daily(user_id, 'unban', context.args, f"解封用户 {target_id}")
-        await update.message.reply_text(f"已解封用户 {target_id}", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(f"已解封用户 {target_id}，身份为临时用户，3天后自动转为普通用户。", reply_markup=ReplyKeyboardRemove())
     else:
         await update.message.reply_text(f"用户 {target_id} 不在黑名单。", reply_markup=ReplyKeyboardRemove())
 
 async def disallow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("只有管理员才能移除白名单用户。")
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'disallow')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     if not context.args:
         await update.message.reply_text("用法：/disallow <用户ID>")
@@ -750,12 +761,13 @@ async def disallow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await send_md(update.message.reply_text, "只有管理员才能查看统计。", reply_markup=ReplyKeyboardRemove())
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'stats')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     stats = load_usage_stats() or {}
     if not stats:
-        await send_md(update.message.reply_text, "暂无任何用户统计数据。", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("暂无任何用户统计数据。", reply_markup=ReplyKeyboardRemove())
         return
     
     msg = ["`用户ID         | 累计 | 最后签到时间`"]
@@ -775,12 +787,13 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
         msg.append(f"`{uid:<14}` | *{count:<4}* | `{last}`")
         
-    await send_md(update.message.reply_text, "\n".join(msg), reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("\n".join(msg), reply_markup=ReplyKeyboardRemove())
 
 async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("只有管理员才能查看排行。")
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'top')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     stats = load_usage_stats() or {}
     top_users = sorted(stats.items(), key=lambda x: x[1].get('count', 0), reverse=True)[:10]
@@ -792,11 +805,13 @@ async def top_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = ["*活跃用户排行 (前10)*"]
     for i, (uid, info) in enumerate(top_users, 1):
         msg.append(f"`{i}`. `{uid}` - *{info.get('count', 0)}* 次")
-    await send_md(update.message.reply_text, "\n".join(msg), reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text("\n".join(msg), reply_markup=ReplyKeyboardRemove())
 
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not check_admin_and_warn(update, user_id, 'broadcast'):
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'broadcast')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     if not context.args:
         await update.message.reply_text("用法：/broadcast <内容>")
@@ -817,7 +832,9 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not check_admin_and_warn(update, user_id, 'export'):
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'export')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     stats = load_usage_stats()
     allowed = list(load_allowed_users())
@@ -836,28 +853,32 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setlimit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("只有管理员才能设置次数上限。")
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'setlimit')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
-    if not context.args:
-        await update.message.reply_text("用法：/setlimit <次数>")
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text("用法：/setlimit <id> <次数>")
         return
     try:
-        limit = int(context.args[0])
-        save_json("limit_config.json", {"limit": limit})
-        await update.message.reply_text(f"已设置每日签到次数上限为 {limit} 次。", reply_markup=ReplyKeyboardRemove())
-        log_admin_action("setlimit", f"设置每日签到次数上限为 {limit}")
+        target_id = int(context.args[0])
+        limit = int(context.args[1])
+        user_limits = load_user_limits()
+        user_limits[str(target_id)] = limit
+        save_user_limits(user_limits)
+        await update.message.reply_text(f"已设置用户 {target_id} 的每日签到次数上限为 {limit} 次。", reply_markup=ReplyKeyboardRemove())
+        log_admin_action("setlimit", f"设置用户 {target_id} 每日签到次数上限为 {limit}")
     except Exception:
-        await update.message.reply_text("参数错误。")
+        await update.message.reply_text("参数错误。用法：/setlimit <id> <次数>")
 
 async def restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("只有管理员才能重启Bot。")
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'restart')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     await update.message.reply_text("Bot正在重启...", reply_markup=ReplyKeyboardRemove())
     log_admin_action("restart", "管理员触发重启")
-    # 创建重启标记文件
     with open('.restarting', 'w') as f:
         f.write('restarting')
     python = sys.executable
@@ -866,8 +887,9 @@ async def restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def shutdown_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("只有管理员才能关闭Bot。")
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'shutdown')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     await update.message.reply_text("Bot即将关闭...", reply_markup=ReplyKeyboardRemove())
     log_admin_action("shutdown", "关闭Bot")
@@ -892,10 +914,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/top - 查看活跃用户排行\n"
         "/broadcast <内容> - 向所有用户广播消息\n"
         "/export - 导出所有数据\n"
-        "/setlimit <次数> - 设置每日签到次数上限\n"
+        "/setlimit <id> <次数> - 设置每日签到次数上限\n"
         "/restart - 重启Bot\n"
         "/shutdown - 关闭Bot\n"
-        "/menu - 获取/刷新命令菜单\n"
     )
     await update.message.reply_text(help_text, reply_markup=ReplyKeyboardRemove())
 
@@ -903,8 +924,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("只有管理员才能设置Bot命令菜单。")
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'menu')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
     all_commands = [
         ("acck", "Acck签到"),
@@ -948,18 +970,17 @@ def record_admin_attempt(user_id, command):
     save_json(ADMIN_ATTEMPT_FILE, data)
     return data[key]["count"]
 
-def check_admin_and_warn(update, user_id, command):
+def check_admin_and_warn(user_id, command):
     if not is_admin(user_id):
         count = record_admin_attempt(user_id, command)
         if count >= 3:
             banned = load_banned_users()
             banned.add(user_id)
             save_banned_users(banned)
-            update.message.reply_text(f"你不是管理员，已被自动拉黑。请勿反复尝试管理命令。", reply_markup=ReplyKeyboardRemove())
+            return False, "你不是管理员，已被自动拉黑。请勿反复尝试管理命令。"
         else:
-            update.message.reply_text(f"你不是管理员，无权使用此命令。警告 {count}/3，超过3次将被拉黑。", reply_markup=ReplyKeyboardRemove())
-        return False
-    return True
+            return False, f"你不是管理员，无权使用此命令。警告 {count}/3，超过3次将被拉黑。"
+    return True, None
 
 # ========== 管理员操作日志 ========== 
 def log_admin_action_daily(user_id, command, args, result):
@@ -984,7 +1005,8 @@ async def send_md(message_func, text, **kwargs):
 
 async def summary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id):
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'summary')
+    if not is_ok:
         await send_md(update.message.reply_text, "只有管理员才能查看汇总数据。")
         return
     files = sorted(glob.glob("admin_log_*.json"))
@@ -1005,15 +1027,12 @@ async def summary_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def acck_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Acck签到入口"""
     user_id = update.effective_user.id
-    if not is_allowed(user_id):
-        await check_admin_and_warn(update, user_id, "/acck")
-        return
     if is_banned(user_id):
         await update.message.reply_text("❌ 您已被封禁，无法使用此功能", reply_markup=ReplyKeyboardRemove())
         return
     can_use, usage = check_daily_limit(user_id)
     if not can_use:
-        await update.message.reply_text(f"❌ 您已达到每日使用限制 ({usage}/{get_daily_limit()})", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(f"❌ 您已达到每日使用限制 ({usage}/{get_daily_limit(user_id)})", reply_markup=ReplyKeyboardRemove())
         return
     
     # 检查是否是首次使用（通过检查是否有启动提示记录）
@@ -1023,7 +1042,7 @@ async def acck_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ✅ 机器人正常运行中
 🆔 用户ID：`{user_id}`
-📊 今日剩余次数：{get_daily_limit() - usage}/{get_daily_limit()}
+📊 今日剩余次数：{get_daily_limit(user_id) - usage}/{get_daily_limit(user_id)}
 🎯 当前操作：Acck平台签到
 
 ---
@@ -1052,15 +1071,12 @@ async def acck_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def akile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Akile签到入口"""
     user_id = update.effective_user.id
-    if not is_allowed(user_id):
-        await check_admin_and_warn(update, user_id, "/akile")
-        return
     if is_banned(user_id):
         await update.message.reply_text("❌ 您已被封禁，无法使用此功能", reply_markup=ReplyKeyboardRemove())
         return
     can_use, usage = check_daily_limit(user_id)
     if not can_use:
-        await update.message.reply_text(f"❌ 您已达到每日使用限制 ({usage}/{get_daily_limit()})", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(f"❌ 您已达到每日使用限制 ({usage}/{get_daily_limit(user_id)})", reply_markup=ReplyKeyboardRemove())
         return
     
     # 检查是否是首次使用（通过检查是否有启动提示记录）
@@ -1070,7 +1086,7 @@ async def akile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ✅ 机器人正常运行中
 🆔 用户ID：`{user_id}`
-📊 今日剩余次数：{get_daily_limit() - usage}/{get_daily_limit()}
+📊 今日剩余次数：{get_daily_limit(user_id) - usage}/{get_daily_limit(user_id)}
 🎯 当前操作：Akile平台签到
 
 ---
@@ -1150,9 +1166,30 @@ async def add_select_module(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return "ADD_INPUT_USERNAME"
 
 async def add_input_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['add_username'] = update.message.text.strip()
-    await update.message.reply_text("请输入密码：")
-    return "ADD_INPUT_PASSWORD"
+    username = update.message.text.strip()
+    module = context.user_data['add_module']
+    user_file = os.path.join(module, 'users', f"{username}.json")
+    context.user_data['add_username'] = username
+    if os.path.exists(user_file):
+        with open(user_file, 'r', encoding='utf-8') as f:
+            info = json.load(f)
+        context.user_data['existing_info'] = info
+        await update.message.reply_text(
+            "检测到已有账号信息，是否直接使用？\n回复'是'直接用，回复'否'重新输入密码和TOTP。"
+        )
+        return "ADD_USE_EXISTING"
+    else:
+        await update.message.reply_text("请输入密码：")
+        return "ADD_INPUT_PASSWORD"
+
+async def add_use_existing(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answer = update.message.text.strip()
+    if answer == "是":
+        # 直接进入时间选择
+        return await add_select_time(update, context, edit=False)
+    else:
+        await update.message.reply_text("请输入密码：")
+        return "ADD_INPUT_PASSWORD"
 
 async def add_input_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['add_password'] = update.message.text.strip()
@@ -1178,9 +1215,9 @@ async def add_input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /del命令 - 删除定时任务
 async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_allowed(user_id):
-        await update.message.reply_text("❌ 您未被授权使用此功能")
-        return
+    if is_banned(user_id):
+        await update.message.reply_text("您已被拉黑，无法使用本Bot。")
+        return ConversationHandler.END
     
     # 检查是否是首次使用（通过检查是否有启动提示记录）
     if not context.user_data.get('bot_started'):
@@ -1226,12 +1263,12 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_op_log(user_module[user_id], context.user_data['add_username'], '删除任务', task_id, 'error', result, error=task_id)
     return ConversationHandler.END
 
-# /all命令 - 查看所有定时任务
+# /list命令 - 查看所有定时任务
 async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_allowed(user_id):
-        await update.message.reply_text("❌ 您未被授权使用此功能")
-        return
+    if is_banned(user_id):
+        await update.message.reply_text("您已被拉黑，无法使用本Bot。")
+        return ConversationHandler.END
     
     # 检查是否是首次使用（通过检查是否有启动提示记录）
     if not context.user_data.get('bot_started'):
@@ -1343,6 +1380,7 @@ add_conv_handler = ConversationHandler(
         "ADD_INPUT_TOTP": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_totp)],
         "ADD_SELECT_TIME": [CallbackQueryHandler(add_confirm, pattern="^add_time_\\d+_\\d+$|^add_custom_time$")],
         "ADD_CUSTOM_TIME": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_time_confirm)],
+        "ADD_USE_EXISTING": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_use_existing)],
     },
     fallbacks=[CommandHandler('cancel', cancel)],
 )
@@ -1428,12 +1466,16 @@ def main():
     app.add_handler(CommandHandler('summary', summary_cmd))
     app.add_handler(CommandHandler('add', add_cmd))
     app.add_handler(CommandHandler('del', del_cmd))
-    app.add_handler(CommandHandler('all', all_cmd))
+    app.add_handler(CommandHandler('list', all_cmd))
     
     # 启动定时任务调度器
     global task_scheduler
     task_scheduler = TaskScheduler(app)
     task_scheduler.start()
+    
+    # 启动自动清理缓存定时任务
+    schedule_clean_cache(app)
+    app.add_handler(CommandHandler('clean_cache', clean_cache_cmd))
     
     print('🚀 Bot已启动...')
     print('🕐 定时任务调度器已启动...')
@@ -1449,6 +1491,176 @@ def save_user_info(user_id, module, info):
     user_file = os.path.join(users_dir, f"{username}.json")
     with open(user_file, 'w', encoding='utf-8') as f:
         json.dump(info, f, ensure_ascii=False, indent=2)
+
+# 临时用户管理
+
+def load_temp_users():
+    return load_json(TEMP_USERS_FILE, {})
+
+def save_temp_users(data):
+    save_json(TEMP_USERS_FILE, data)
+
+def add_temp_user(user_id):
+    data = load_temp_users()
+    data[str(user_id)] = datetime.now().isoformat()
+    save_temp_users(data)
+
+def remove_temp_user(user_id):
+    data = load_temp_users()
+    if str(user_id) in data:
+        del data[str(user_id)]
+        save_temp_users(data)
+
+def is_temp_user(user_id):
+    data = load_temp_users()
+    if str(user_id) not in data:
+        return False
+    # 检查是否超过3天
+    try:
+        dt = datetime.fromisoformat(data[str(user_id)])
+        if datetime.now() - dt < timedelta(days=3):
+            return True
+        else:
+            # 超过3天自动转为普通用户
+            remove_temp_user(user_id)
+            return False
+    except Exception:
+        remove_temp_user(user_id)
+        return False
+
+def is_whitelist(user_id):
+    return user_id in load_allowed_users()
+
+def check_daily_limit(user_id):
+    if is_admin(user_id):
+        return True, 0
+    today = date.today().isoformat()
+    usage_data = load_daily_usage()
+    if today not in usage_data:
+        usage_data[today] = {}
+    user_usage = usage_data[today].get(str(user_id), 0)
+    return user_usage < get_daily_limit(user_id), user_usage
+
+def increment_daily_usage(user_id):
+    if is_admin(user_id):
+        return
+    today = date.today().isoformat()
+    usage_data = load_daily_usage()
+    if today not in usage_data:
+        usage_data[today] = {}
+    if str(user_id) not in usage_data[today]:
+        usage_data[today][str(user_id)] = 0
+    usage_data[today][str(user_id)] += 1
+    save_daily_usage(usage_data)
+
+# 汇总并清理缓存
+
+def clean_cache(context=None):
+    now = datetime.now()
+    summary_logs = []
+    deleted_logs = []
+    for f in glob.glob("admin_log_*.json"):
+        t = os.path.getmtime(f)
+        if now - datetime.fromtimestamp(t) > timedelta(days=7):
+            try:
+                with open(f, "r", encoding="utf-8") as fin:
+                    summary_logs.extend(json.load(fin))
+            except Exception:
+                pass
+            deleted_logs.append(f)
+            os.remove(f)
+    # 汇总到 summary_log.json
+    if summary_logs:
+        try:
+            if os.path.exists(SUMMARY_LOG_FILE):
+                with open(SUMMARY_LOG_FILE, "r", encoding="utf-8") as f:
+                    old = json.load(f)
+            else:
+                old = []
+            old = [x for x in old if (now - datetime.fromisoformat(x['time'])).days <= 7]
+            all_logs = old + summary_logs
+            with open(SUMMARY_LOG_FILE, "w", encoding="utf-8") as f:
+                json.dump(all_logs, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    summary_signin = []
+    deleted_signin = []
+    for module in ['Acck', 'Akile']:
+        for f in glob.glob(f"{module}/*_success.log") + glob.glob(f"{module}/*_error.log"):
+            t = os.path.getmtime(f)
+            if now - datetime.fromtimestamp(t) > timedelta(days=7):
+                try:
+                    with open(f, "r", encoding="utf-8") as fin:
+                        summary_signin.append({"file": f, "content": fin.read(), "mtime": t})
+                except Exception:
+                    pass
+                deleted_signin.append(f)
+                os.remove(f)
+    if summary_signin:
+        try:
+            if os.path.exists(SUMMARY_SIGNIN_FILE):
+                with open(SUMMARY_SIGNIN_FILE, "r", encoding="utf-8") as f:
+                    old = json.load(f)
+            else:
+                old = []
+            old = [x for x in old if (now - datetime.fromtimestamp(x['mtime'])).days <= 7]
+            all_signin = old + summary_signin
+            with open(SUMMARY_SIGNIN_FILE, "w", encoding="utf-8") as f:
+                json.dump(all_signin, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    deleted_broadcast = []
+    for f in glob.glob("broadcast_*.txt"):
+        t = os.path.getmtime(f)
+        if now - datetime.fromtimestamp(t) > timedelta(days=7):
+            deleted_broadcast.append(f)
+            os.remove(f)
+    data = load_temp_users()
+    changed = False
+    deleted_temp = []
+    for uid, ts in list(data.items()):
+        try:
+            dt = datetime.fromisoformat(ts)
+            if now - dt > timedelta(days=3):
+                deleted_temp.append(uid)
+                del data[uid]
+                changed = True
+        except Exception:
+            deleted_temp.append(uid)
+            del data[uid]
+            changed = True
+    if changed:
+        save_temp_users(data)
+    # 汇总消息
+    summary = f"[缓存清理汇总]\n"
+    summary += f"本次清理日志文件: {len(deleted_logs)} 个\n" if deleted_logs else ""
+    summary += f"本次清理签到日志: {len(deleted_signin)} 个\n" if deleted_signin else ""
+    summary += f"本次清理广播日志: {len(deleted_broadcast)} 个\n" if deleted_broadcast else ""
+    summary += f"本次清理临时用户: {len(deleted_temp)} 个\n" if deleted_temp else ""
+    summary += f"已汇总到 summary_log.json, summary_signin.json，7天后自动覆盖。"
+    # 发送到管理员
+    if context is not None:
+        try:
+            context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=summary)
+        except Exception as e:
+            print(f"[CLEAN] 汇总消息发送失败: {e}")
+    print("[CLEAN] 缓存清理和数据汇总完成")
+
+# PTB JobQueue定时任务
+
+def schedule_clean_cache(application):
+    job_queue = application.job_queue
+    job_queue.run_repeating(lambda ctx: clean_cache(ctx), interval=86400, first=0)
+
+# 管理员命令
+async def clean_cache_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    is_ok, warn_msg = check_admin_and_warn(user_id, 'clean_cache')
+    if not is_ok:
+        await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
+        return
+    clean_cache(context)
+    await update.message.reply_text("缓存清理和数据汇总完成。")
 
 if __name__ == '__main__':
     main() 
