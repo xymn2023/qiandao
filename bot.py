@@ -14,7 +14,7 @@ import os
 import json
 import requests
 import subprocess
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import glob
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -29,6 +29,27 @@ import threading
 import time
 from croniter import croniter
 import logging
+
+# ========== 时区设置 ==========
+# 设置时区为 Asia/Shanghai
+import os
+os.environ['TZ'] = 'Asia/Shanghai'
+try:
+    time.tzset()  # Linux系统设置时区
+except AttributeError:
+    pass  # Windows系统不支持tzset
+
+# 定义获取上海时间的函数
+def get_shanghai_time():
+    """获取上海时区的当前时间"""
+    shanghai_tz = timezone(timedelta(hours=8))  # UTC+8
+    return datetime.now(shanghai_tz)
+
+def get_shanghai_now():
+    """获取上海时区的当前时间（不带时区信息，兼容原有代码）"""
+    return get_shanghai_time().replace(tzinfo=None)
+
+# ==============================
 
 # 数据文件
 ALLOWED_USERS_FILE = "allowed_users.json"
@@ -90,7 +111,7 @@ def save_banned_users(users):
 def log_admin_action(action, detail):
     logs = load_json(ADMIN_LOG_FILE, [])
     logs.append({
-        "time": datetime.now().isoformat(),
+        "time": get_shanghai_now().isoformat(),
         "action": action,
         "detail": detail
     })
@@ -155,7 +176,7 @@ def increment_daily_usage(user_id):
 
 def record_usage(user_id):
     stats = load_usage_stats()
-    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    now = get_shanghai_now().strftime('%Y-%m-%d %H:%M:%S')
     if str(user_id) not in stats:
         stats[str(user_id)] = {"count": 0, "last": now}
     stats[str(user_id)]["count"] += 1
@@ -180,7 +201,7 @@ def add_scheduled_task(user_id, module, username, hour, minute):
         "hour": hour,
         "minute": minute,
         "enabled": True,
-        "created_at": datetime.now().isoformat(),
+        "created_at": get_shanghai_now().isoformat(),
         "last_run": None
     }
     tasks[task_id] = task
@@ -220,7 +241,7 @@ def parse_time_input(time_str):
 # 日志保存函数
 
 def save_task_log(module, username, status, message, error=None):
-    now = datetime.now().strftime('%Y%m%d_%H%M%S')
+    now = get_shanghai_now().strftime('%Y%m%d_%H%M%S')
     log_dir = os.path.join(module)
     os.makedirs(log_dir, exist_ok=True)
     if status == 'success':
@@ -236,7 +257,7 @@ def save_task_log(module, username, status, message, error=None):
 # 操作日志保存函数
 
 def save_op_log(module, username, op_type, task_id, status, message, error=None):
-    now = datetime.now().strftime('%Y%m%d_%H%M%S')
+    now = get_shanghai_now().strftime('%Y%m%d_%H%M%S')
     log_dir = os.path.join(module)
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"{now}_op.log")
@@ -267,7 +288,7 @@ class TaskScheduler:
     def _scheduler_loop(self):
         while self.running:
             try:
-                now = datetime.now()
+                now = get_shanghai_now()
                 tasks = load_scheduled_tasks()
                 for task in tasks.values():
                     if not task.get("enabled", True):
@@ -316,7 +337,7 @@ class TaskScheduler:
                     raise Exception(f"未知模块: {module}")
                 increment_daily_usage(user_id)
                 record_usage(user_id)
-                task['last_run'] = datetime.now().isoformat()
+                task['last_run'] = get_shanghai_now().isoformat()
                 save_scheduled_tasks(load_scheduled_tasks())
                 status = "success" if ("成功" in result or "已签到" in result) else "error"
                 message = f"🕐 定时任务执行结果\n\n平台: {module}\n账号: {username}\n时间: {task['hour']:02d}:{task['minute']:02d}\n状态: {'✅ 成功' if status=='success' else '❌ 失败'}\n结果: {result}"
@@ -787,7 +808,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=uid, text=f"[管理员广播]\n{msg}")
         except Exception:
             pass
-    now = datetime.now()
+    now = get_shanghai_now()
     log_file = f"broadcast_{now.strftime(LOG_TIME_FMT)}.txt"
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(f"{now.isoformat()} 管理员{user_id} 广播: {msg}\n")
@@ -806,7 +827,7 @@ async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "allowed": allowed,
         "banned": banned
     }
-    now = datetime.now()
+    now = get_shanghai_now()
     export_file = f"export_{now.strftime(LOG_TIME_FMT)}.json"
     with open(export_file, "w", encoding="utf-8") as f:
         json.dump(export, f, ensure_ascii=False, indent=2)
@@ -942,7 +963,7 @@ def check_admin_and_warn(update, user_id, command):
 
 # ========== 管理员操作日志 ========== 
 def log_admin_action_daily(user_id, command, args, result):
-    now = datetime.now()
+    now = get_shanghai_now()
     log_file = f"admin_log_{now.strftime(LOG_TIME_FMT)}.json"
     logs = load_json(log_file, [])
     logs.append({
@@ -1246,7 +1267,7 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += f"   任务ID: {task_id}\n\n"
     
     # 显示当天日志摘要
-    today = datetime.now().strftime('%Y%m%d')
+    today = get_shanghai_now().strftime('%Y%m%d')
     log_summary = "\n📑 今日签到日志摘要：\n"
     for module in ['Acck', 'Akile']:
         log_dir = module

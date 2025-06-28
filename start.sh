@@ -64,6 +64,53 @@ check_and_install_venv() {
     fi
 }
 
+# 设置时区为 Asia/Shanghai
+setup_timezone() {
+    echo "🕐 检查并设置时区..."
+    
+    # 检查当前时区
+    current_timezone=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "unknown")
+    
+    if [ "$current_timezone" = "Asia/Shanghai" ]; then
+        echo "✅ 时区已正确设置为 Asia/Shanghai"
+        return 0
+    fi
+    
+    echo "⚠️ 当前时区: $current_timezone，正在设置为 Asia/Shanghai..."
+    
+    # 检查是否为root用户
+    if [ "$(id -u)" -eq 0 ]; then
+        # 设置时区
+        if command -v timedatectl &>/dev/null; then
+            timedatectl set-timezone Asia/Shanghai
+            echo "✅ 时区设置完成"
+        else
+            # 备用方法
+            if [ -d /usr/share/zoneinfo ]; then
+                ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+                echo "Asia/Shanghai" > /etc/timezone
+                echo "✅ 时区链接已创建"
+            else
+                echo "❌ 无法设置时区，请手动设置"
+                return 1
+            fi
+        fi
+        
+        # 验证设置
+        new_timezone=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "unknown")
+        if [ "$new_timezone" = "Asia/Shanghai" ]; then
+            echo "✅ 时区设置成功: $new_timezone"
+            echo "🕐 当前时间: $(date)"
+        else
+            echo "⚠️ 时区设置可能未生效，当前时区: $new_timezone"
+        fi
+    else
+        echo "⚠️ 非root用户，无法设置系统时区"
+        echo "请手动运行: sudo timedatectl set-timezone Asia/Shanghai"
+        echo "或者使用脚本: sudo bash setup_timezone.sh"
+    fi
+}
+
 # 检查依赖
 for cmd in git python3 curl; do
     if ! command -v $cmd &>/dev/null; then
@@ -352,6 +399,9 @@ run_management_menu() {
         case $action in
             1)
                 [ -n "$PID" ] && echo "正在重启..." && kill "$PID" && sleep 2 || echo "正在启动..."
+                # 设置时区
+                setup_timezone
+                echo "🚀 启动机器人..."
                 nohup "$PYTHON_IN_VENV" -u bot.py > "$SCRIPT_DIR/bot.log" 2>&1 &
                 disown $!
                 sleep 1
