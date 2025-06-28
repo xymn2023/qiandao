@@ -944,8 +944,8 @@ async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ("export", "导出数据"),
         ("setlimit", "设置每日次数"),
         ("restart", "重启Bot"),
-        ("shutdown", "关闭Bot"),
-        ("menu", "获取/刷新命令菜单")
+        ("shutdown", "关闭Bot")
+        # 不再包含 ("menu", "获取/刷新命令菜单")
     ]
     await context.bot.set_my_commands(
         [BotCommand(cmd, desc) for cmd, desc in all_commands]
