@@ -162,8 +162,6 @@ def get_daily_limit(user_id=None):
         if str(user_id) in user_limits:
             return user_limits[str(user_id)]
         if is_temp_user(user_id):
-            return 1
-        if is_whitelist(user_id):
             return 5
     stats = load_json("limit_config.json", {})
     return stats.get("limit", DEFAULT_DAILY_LIMIT)
@@ -265,8 +263,9 @@ def save_op_log(module, username, op_type, task_id, status, message, error=None)
 
 # 定时任务执行器（新逻辑）
 class TaskScheduler:
-    def __init__(self, application):
+    def __init__(self, application, loop):
         self.application = application
+        self.loop = loop
         self.running = False
         self.thread = None
     def start(self):
@@ -314,13 +313,15 @@ class TaskScheduler:
                 print(err_msg)
                 save_task_log(module, username, 'error', '凭证不存在', error=err_msg)
                 # 用主线程事件循环安全推送消息
-                self.application.create_task(
-                    self.application.bot.send_message(
-                        chat_id=user_id,
-                        text=err_msg,
-                        parse_mode=ParseMode.HTML
+                if self.loop and self.loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        self.application.bot.send_message(
+                            chat_id=user_id,
+                            text=err_msg,
+                            parse_mode=ParseMode.HTML
+                        ),
+                        self.loop
                     )
-                )
                 return
             with open(user_file, 'r', encoding='utf-8') as f:
                 user_info = json.load(f)
@@ -339,25 +340,21 @@ class TaskScheduler:
                 message = f"🕐 定时任务执行结果\n\n平台: {module}\n账号: {username}\n时间: {task['hour']:02d}:{task['minute']:02d}\n状态: {'✅ 成功' if status=='success' else '❌ 失败'}\n结果: {result}"
                 save_task_log(module, username, status, result)
                 # 用主线程事件循环安全推送消息
-                self.application.create_task(
-                    self.application.bot.send_message(
-                        chat_id=user_id,
-                        text=message,
-                        parse_mode=ParseMode.HTML
+                if self.loop and self.loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        self.application.bot.send_message(
+                            chat_id=user_id,
+                            text=message,
+                            parse_mode=ParseMode.HTML
+                        ),
+                        self.loop
                     )
-                )
                 print(f"✅ 定时任务执行完成: {task['module']} {task['hour']:02d}:{task['minute']:02d} 账号: {username}")
             except Exception as e:
                 err_msg = f"❌ 执行定时任务错误 {task['id']}: {e}"
                 save_task_log(module, username, 'error', '执行任务异常', error=str(e))
-                # 用主线程事件循环安全推送消息
-                self.application.create_task(
-                    self.application.bot.send_message(
-                        chat_id=user_id,
-                        text=err_msg,
-                        parse_mode=ParseMode.HTML
-                    )
-                )
+                # 用同步方式推送错误信息
+                send_telegram_sync(TELEGRAM_BOT_TOKEN, user_id, err_msg)
                 print(err_msg)
         except Exception as e:
             print(f"❌ 执行定时任务错误 {task['id']}: {e}")
@@ -1218,7 +1215,6 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_banned(user_id):
         await update.message.reply_text("您已被拉黑，无法使用本Bot。")
         return ConversationHandler.END
-    
     # 检查是否是首次使用（通过检查是否有启动提示记录）
     if not context.user_data.get('bot_started'):
         context.user_data['bot_started'] = True
@@ -1231,37 +1227,47 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ---
 💡 机器人已准备就绪，开始处理您的请求..."""
         await update.message.reply_text(status_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
-    
     tasks = get_user_tasks(user_id)
     if not tasks:
         await update.message.reply_text("📋 您还没有添加任何定时任务")
-        return
-    
+        return ConversationHandler.END
     # 构建删除选项
     buttons = []
     for task_id, task in tasks.items():
         label = f"{task['module']} {task['hour']:02d}:{task['minute']:02d}"
         buttons.append([InlineKeyboardButton(f"❌ {label}", callback_data=f"del_{task_id}")])
-    
+    # 不再添加退出按钮，用户需用/cancel退出
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text("请选择要删除的定时任务：", reply_markup=reply_markup)
+    await update.message.reply_text("请选择要删除的定时任务：\n如需退出请发送 /cancel", reply_markup=reply_markup)
     return "DEL_SELECT_TASK"
 
 async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    task_id = query.data.split('_', 1)[1]
     user_id = update.effective_user.id
-    
+    task_id = query.data.split('_', 1)[1]
     success, result = remove_scheduled_task(task_id, user_id)
+    module = user_module.get(user_id, '')
+    username = context.user_data.get('add_username', '')
     if success:
         await query.edit_message_text(f"✅ 定时任务删除成功！\n{result}")
-        save_op_log(user_module[user_id], context.user_data['add_username'], '删除任务', task_id, 'success', result)
+        save_op_log(module, username, '删除任务', task_id, 'success', result)
     else:
         await query.edit_message_text(f"❌ 删除失败: {result}")
-        save_op_log(user_module[user_id], context.user_data['add_username'], '删除任务', task_id, 'error', result, error=task_id)
-    return ConversationHandler.END
+        save_op_log(module, username, '删除任务', task_id, 'error', result, error=task_id)
+    # 删除后自动刷新列表，除非无任务可删
+    tasks = get_user_tasks(user_id)
+    if not tasks:
+        await update.effective_chat.send_message("📋 您已无可删除的定时任务，已自动退出删除界面。")
+        return ConversationHandler.END
+    # 构建新的删除选项
+    buttons = []
+    for tid, task in tasks.items():
+        label = f"{task['module']} {task['hour']:02d}:{task['minute']:02d}"
+        buttons.append([InlineKeyboardButton(f"❌ {label}", callback_data=f"del_{tid}")])
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.effective_chat.send_message("请选择要删除的定时任务：\n如需退出请发送 /cancel", reply_markup=reply_markup)
+    return "DEL_SELECT_TASK"
 
 # /list命令 - 查看所有定时任务
 async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1269,7 +1275,6 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_banned(user_id):
         await update.message.reply_text("您已被拉黑，无法使用本Bot。")
         return ConversationHandler.END
-    
     # 检查是否是首次使用（通过检查是否有启动提示记录）
     if not context.user_data.get('bot_started'):
         context.user_data['bot_started'] = True
@@ -1282,12 +1287,10 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ---
 💡 机器人已准备就绪，开始处理您的请求..."""
         await update.message.reply_text(status_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
-    
     tasks = get_user_tasks(user_id)
     if not tasks:
         await update.message.reply_text("📋 您还没有添加任何定时任务\n使用 /add 添加定时任务")
         return
-    
     message = "📋 您的定时任务列表：\n\n"
     for task_id, task in tasks.items():
         status = "✅ 启用" if task.get('enabled', True) else "❌ 禁用"
@@ -1297,12 +1300,10 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 last_run = datetime.fromisoformat(task['last_run']).strftime('%Y-%m-%d %H:%M:%S')
             except:
                 pass
-        
         message += f"🔹 {task['module']} {task['hour']:02d}:{task['minute']:02d} 账号: {task.get('username','')}\n"
         message += f"   状态: {status}\n"
         message += f"   最后运行: {last_run}\n"
         message += f"   任务ID: {task_id}\n\n"
-    
     # 显示当天日志摘要
     today = get_shanghai_now().strftime('%Y%m%d')
     log_summary = "\n📑 今日签到日志摘要：\n"
@@ -1322,7 +1323,16 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines = f.readlines()
                 log_summary += f"❌ 失败：{''.join(lines)}\n"
     message += log_summary
-    await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
+    # 新增：底部操作按钮
+    buttons = [
+        [InlineKeyboardButton("➕ 继续添加任务", callback_data="all_add")],
+        [InlineKeyboardButton("❌ 删除任务", callback_data="all_del")]
+    ]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text(message, reply_markup=reply_markup)
+    # 处理按钮回调
+    context.user_data['all_cmd_from_list'] = True
+    return "ALL_CMD_ACTION"
 
 # 1. add_confirm
 async def add_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1393,6 +1403,40 @@ del_conv_handler = ConversationHandler(
     fallbacks=[CommandHandler('cancel', cancel)],
 )
 
+# 新增：处理all_cmd_from_list的回调
+async def all_cmd_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "all_add":
+        # 跳转到添加任务流程
+        await add_cmd(update, context)
+        return "ADD_SELECT_MODULE"
+    elif query.data == "all_del":
+        # 跳转到删除任务流程
+        await del_cmd(update, context)
+        return "DEL_SELECT_TASK"
+    else:
+        await query.edit_message_text("未知操作，请重试。")
+        return ConversationHandler.END
+
+# 新增：all_cmd_from_list的对话处理器
+all_cmd_conv_handler = ConversationHandler(
+    entry_points=[CommandHandler('list', all_cmd)],
+    states={
+        "ALL_CMD_ACTION": [CallbackQueryHandler(all_cmd_action, pattern="^(all_add|all_del)$")],
+        # 复用add/del的后续状态
+        "ADD_SELECT_MODULE": [CallbackQueryHandler(add_select_module, pattern="^add_.*$")],
+        "ADD_INPUT_USERNAME": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_username)],
+        "ADD_INPUT_PASSWORD": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_password)],
+        "ADD_INPUT_TOTP": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_totp)],
+        "ADD_SELECT_TIME": [CallbackQueryHandler(add_confirm, pattern="^add_time_\\d+_\\d+$|^add_custom_time$")],
+        "ADD_CUSTOM_TIME": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_custom_time_confirm)],
+        "ADD_USE_EXISTING": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_use_existing)],
+        "DEL_SELECT_TASK": [CallbackQueryHandler(del_confirm, pattern="^del_.*$")],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)],
+)
+
 # main函数注册
 def main():
     import sys
@@ -1414,22 +1458,11 @@ def main():
     print('-' * 50)
     
     app = Application.builder().token(TOKEN).build()
-    # 检查是否为重启
-    if os.path.exists('.restarting'):
-        try:
-            import asyncio
-            async def notify_admin():
-                await app.bot.send_message(chat_id=CHAT_ID, text="🚀 Bot已启动，重启成功！")
-            try:
-                asyncio.get_event_loop().run_until_complete(notify_admin())
-            except Exception:
-                asyncio.run(notify_admin())
-        except Exception as e:
-            print(f"[启动通知失败] {e}")
-        os.remove('.restarting')
-    # 注册所有handler（ConversationHandler必须最前面）
-    app.add_handler(add_conv_handler)
-    app.add_handler(del_conv_handler)
+    # 获取主线程事件循环
+    loop = asyncio.get_event_loop()
+    global task_scheduler
+    task_scheduler = TaskScheduler(app, loop)
+    task_scheduler.start()
     
     # 添加账号配置流程的对话处理器
     conv_handler = ConversationHandler(
@@ -1466,12 +1499,7 @@ def main():
     app.add_handler(CommandHandler('summary', summary_cmd))
     app.add_handler(CommandHandler('add', add_cmd))
     app.add_handler(CommandHandler('del', del_cmd))
-    app.add_handler(CommandHandler('list', all_cmd))
-    
-    # 启动定时任务调度器
-    global task_scheduler
-    task_scheduler = TaskScheduler(app)
-    task_scheduler.start()
+    app.add_handler(all_cmd_conv_handler)
     
     # 启动自动清理缓存定时任务
     schedule_clean_cache(app)
@@ -1646,11 +1674,16 @@ def clean_cache(context=None):
             print(f"[CLEAN] 汇总消息发送失败: {e}")
     print("[CLEAN] 缓存清理和数据汇总完成")
 
+# 新增：异步包装clean_cache，供JobQueue调用
+async def clean_cache_async(context=None):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, clean_cache, context)
+
 # PTB JobQueue定时任务
 
 def schedule_clean_cache(application):
     job_queue = application.job_queue
-    job_queue.run_repeating(lambda ctx: clean_cache(ctx), interval=86400, first=0)
+    job_queue.run_repeating(clean_cache_async, interval=86400, first=0)
 
 # 管理员命令
 async def clean_cache_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1661,6 +1694,14 @@ async def clean_cache_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     clean_cache(context)
     await update.message.reply_text("缓存清理和数据汇总完成。")
+
+# 同步推送Telegram消息（用于线程/异常场景）
+def send_telegram_sync(token, chat_id, text):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        requests.post(url, json={"chat_id": chat_id, "text": text})
+    except Exception as e:
+        print(f"同步推送Telegram失败: {e}")
 
 if __name__ == '__main__':
     main() 
