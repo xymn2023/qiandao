@@ -1114,7 +1114,6 @@ async def akile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    
     # 检查是否是首次使用（通过检查是否有启动提示记录）
     if not context.user_data.get('bot_started'):
         context.user_data['bot_started'] = True
@@ -1126,14 +1125,13 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ---
 💡 机器人已准备就绪，开始处理您的请求..."""
-        await update.message.reply_text(status_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
-    
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=status_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
     buttons = [
         [InlineKeyboardButton("Acck", callback_data="add_Acck")],
         [InlineKeyboardButton("Akile", callback_data="add_Akile")]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text("请选择要添加定时任务的平台：", reply_markup=reply_markup)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="请选择要添加定时任务的平台：", reply_markup=reply_markup)
     return "ADD_SELECT_MODULE"
 
 async def add_select_time(update, context, edit=False):
@@ -1213,7 +1211,7 @@ async def add_input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_banned(user_id):
-        await update.message.reply_text("您已被拉黑，无法使用本Bot。")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="您已被拉黑，无法使用本Bot。")
         return ConversationHandler.END
     # 检查是否是首次使用（通过检查是否有启动提示记录）
     if not context.user_data.get('bot_started'):
@@ -1226,10 +1224,10 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ---
 💡 机器人已准备就绪，开始处理您的请求..."""
-        await update.message.reply_text(status_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=status_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
     tasks = get_user_tasks(user_id)
     if not tasks:
-        await update.message.reply_text("📋 您还没有添加任何定时任务")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="📋 您还没有添加任何定时任务")
         return ConversationHandler.END
     # 构建删除选项
     buttons = []
@@ -1238,7 +1236,7 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton(f"❌ {label}", callback_data=f"del_{task_id}")])
     # 不再添加退出按钮，用户需用/cancel退出
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text("请选择要删除的定时任务：\n如需退出请发送 /cancel", reply_markup=reply_markup)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="请选择要删除的定时任务：\n如需退出请发送 /cancel", reply_markup=reply_markup)
     return "DEL_SELECT_TASK"
 
 async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1273,7 +1271,7 @@ async def del_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_banned(user_id):
-        await update.message.reply_text("您已被拉黑，无法使用本Bot。")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="您已被拉黑，无法使用本Bot。")
         return ConversationHandler.END
     # 检查是否是首次使用（通过检查是否有启动提示记录）
     if not context.user_data.get('bot_started'):
@@ -1286,11 +1284,11 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ---
 💡 机器人已准备就绪，开始处理您的请求..."""
-        await update.message.reply_text(status_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=status_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
     tasks = get_user_tasks(user_id)
     if not tasks:
-        await update.message.reply_text("📋 您还没有添加任何定时任务\n使用 /add 添加定时任务")
-        return
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="📋 您还没有添加任何定时任务\n使用 /add 添加定时任务")
+        return ConversationHandler.END
     message = "📋 您的定时任务列表：\n\n"
     for task_id, task in tasks.items():
         status = "✅ 启用" if task.get('enabled', True) else "❌ 禁用"
@@ -1329,7 +1327,7 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❌ 删除任务", callback_data="all_del")]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
-    await update.message.reply_text(message, reply_markup=reply_markup)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=message + "\n如需退出请发送 /cancel", reply_markup=reply_markup)
     # 处理按钮回调
     context.user_data['all_cmd_from_list'] = True
     return "ALL_CMD_ACTION"
@@ -1497,7 +1495,7 @@ def main():
     app.add_handler(CommandHandler('shutdown', shutdown_cmd))
     app.add_handler(CommandHandler('menu', menu_cmd))
     app.add_handler(CommandHandler('summary', summary_cmd))
-    app.add_handler(CommandHandler('add', add_cmd))
+    app.add_handler(add_conv_handler)
     app.add_handler(CommandHandler('del', del_cmd))
     app.add_handler(all_cmd_conv_handler)
     
