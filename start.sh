@@ -369,203 +369,7 @@ perform_update() {
     fi
 }
 
-# 后续代码保持不变
-{insert\_element\_1\_YGBgCgojIyM=} 2. `bot.py` 文件优化
-
-```python
-# ========== 重要配置 ==========
-# 请在下方填写你的 Telegram Bot Token 和 Chat ID
-from dotenv import load_dotenv
-import os
-load_dotenv()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    print("❌ 配置错误：请在项目根目录新建 .env 文件，并填写 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID")
-    exit(1)
-# ==============================
-
-import os
-import json
-import requests
-import subprocess
-from datetime import datetime, date, timedelta, timezone
-import glob
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes, CallbackQueryHandler
-)
-from telegram.constants import ParseMode
-from Acck.qiandao import main as acck_signin
-from Akile.qiandao import main as akile_signin
-import sys
-import asyncio
-import threading
-import time
-from croniter import croniter
-import logging
-
-# ========== 时区设置 ==========
-# 设置时区为 Asia/Shanghai
-import os
-os.environ['TZ'] = 'Asia/Shanghai'
-try:
-    time.tzset()  # Linux系统设置时区
-except AttributeError:
-    pass  # Windows系统不支持tzset
-
-# 定义获取上海时间的函数
-def get_shanghai_time():
-    """获取上海时区的当前时间"""
-    shanghai_tz = timezone(timedelta(hours=8))  # UTC+8
-    return datetime.now(shanghai_tz)
-
-def get_shanghai_now():
-    """获取上海时区的当前时间（不带时区信息，兼容原有代码）"""
-    return get_shanghai_time().replace(tzinfo=None)
-
-# ==============================
-
-# 数据文件
-ALLOWED_USERS_FILE = "allowed_users.json"
-BANNED_USERS_FILE = "banned_users.json"
-DAILY_USAGE_FILE = "daily_usage.json"
-USAGE_STATS_FILE = "usage_stats.json"
-ADMIN_LOG_FILE = "admin_log.json"
-ADMIN_ATTEMPT_FILE = "admin_attempts.json"
-SCHEDULED_TASKS_FILE = "scheduled_tasks.json"
-TEMP_USERS_FILE = "temp_users.json"
-USER_LIMITS_FILE = "user_limits.json"
-SUMMARY_LOG_FILE = "summary_log.json"
-SUMMARY_SIGNIN_FILE = "summary_signin.json"
-
-# 默认每日次数限制
-DEFAULT_DAILY_LIMIT = 3
-
-# 日志文件名格式
-LOG_TIME_FMT = '%Y-%m-%d_%H%M'
-
-# 推荐时间点
-RECOMMENDED_TIMES = [
-    (0, 0),   # 0:00
-    (0, 10),  # 0:10 (默认)
-    (0, 20),  # 0:20
-    (0, 30),  # 0:30
-    (1, 0),   # 1:00
-]
-
-# 默认时间
-DEFAULT_HOUR, DEFAULT_MINUTE = 0, 10
-
-# ========== 工具函数 ==========
-
-def load_json(filename, default):
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            print(f"❌ 读取 {filename} 文件时发生JSON解析错误，使用默认值")
-            return default
-    return default
-
-def save_json(filename, data):
-    try:
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"❌ 保存 {filename} 文件时发生错误: {e}")
-
-# 白名单
-
-def load_allowed_users():
-    return set(load_json(ALLOWED_USERS_FILE, []))
-
-def save_allowed_users(users):
-    save_json(ALLOWED_USERS_FILE, list(users))
-
-# 黑名单
-
-def load_banned_users():
-    return set(load_json(BANNED_USERS_FILE, []))
-
-def save_banned_users(users):
-    save_json(BANNED_USERS_FILE, list(users))
-
-# 日志
-
-def log_admin_action(action, detail):
-    logs = load_json(ADMIN_LOG_FILE, [])
-    logs.append({
-        "time": get_shanghai_now().isoformat(),
-        "action": action,
-        "detail": detail
-    })
-    save_json(ADMIN_LOG_FILE, logs)
-
-# 统计
-
-def load_usage_stats():
-    return load_json(USAGE_STATS_FILE, {})
-
-def save_usage_stats(stats):
-    save_json(USAGE_STATS_FILE, stats)
-
-# 每日次数
-
-def load_daily_usage():
-    return load_json(DAILY_USAGE_FILE, {})
-
-def save_daily_usage(usage_data):
-    save_json(DAILY_USAGE_FILE, usage_data)
-
-# 权限判断
-
-def is_admin(user_id):
-    return str(user_id) == str(TELEGRAM_CHAT_ID)
-
-def is_banned(user_id):
-    return user_id in load_banned_users()
-
-def is_allowed(user_id):
-    # 只要不是黑名单都允许使用
-    return not is_banned(user_id)
-
-# 用户专属签到次数管理
-def load_user_limits():
-    return load_json(USER_LIMITS_FILE, {})
-
-def save_user_limits(data):
-    save_json(USER_LIMITS_FILE, data)
-
-def get_daily_limit(user_id=None):
-    # 优先查用户专属次数
-    if user_id is not None:
-        user_limits = load_user_limits()
-        if str(user_id) in user_limits:
-            return user_limits[str(user_id)]
-        if is_temp_user(user_id):
-            return 5
-    stats = load_json("limit_config.json", {})
-    return stats.get("limit", DEFAULT_DAILY_LIMIT)
-
-# 统计记录
-
-def record_usage(user_id):
-    stats = load_usage_stats()
-    now = get_shanghai_now().strftime('%Y-%m-%d %H:%M:%S')
-    if str(user_id) not in stats:
-        stats[str(user_id)] = {"count": 0, "last": now}
-    stats[str(user_id)]["count"] += 1
-    stats[str(user_id)]["last"] = now
-    save_usage_stats(stats)
-
-# 定时任务管理（新结构）
-def load_scheduled_tasks():
-    return load_json(SCHEDULED_TASKS_FILE, {})
-
-def save_scheduled_tasks(tasks):
-    save_json(SCHEDULED_TASKS_FILE, tasks)
+# 继续执行后续代码
 
 def add_scheduled_task(user_id, module, username, hour, minute):
     tasks = load_scheduled_tasks()
@@ -705,9 +509,8 @@ class TaskScheduler:
             # 执行签到任务的代码
         except Exception as e:
             print(f"❌ 执行定时任务时发生错误: {e}")
-{insert\_element\_2\_CmBgYAoKIyMjIDMuIGBBY2M=}k/q{insert\_element\_3\_aWFuZGFvLnB5YCDlkowgYEFraWw=}e/qiandao.py{insert\_element\_4\_YCDmlofku7bkvJjljJYKCiMjIyMgYEFjYw==}k/qiandao.py`
 
-```python
+# 继续执行后续代码
 #!/usr/bin/env python3
 
 import requests
@@ -904,9 +707,9 @@ def main(email, password, totp=None):
     except Exception as e:
         return f"执行出错: {e}"
 
-# 如需测试请在bot.py中调用main，不建议直接运行本{insert\_element\_5\_5paH5Lu2CgpgYGAKCiMjIyMgYEFraQ==}le/qiandao.py`
+# 如需测试请在bot.py中调用main，不建议直接运行本文件
 
-```python
+# 继续执行后续代码
 #!/usr/bin/env python3
 
 import os
