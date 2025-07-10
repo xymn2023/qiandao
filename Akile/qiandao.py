@@ -47,7 +47,12 @@ class AkileAccount:
         self.session = AkileSession().session
         
     def login(self) -> Tuple[Optional[str], Optional[str]]:
-        """登录流程"""
+        """
+        登录流程
+        
+        Returns:
+            Tuple[Optional[str], Optional[str]]: (token, error_message)
+        """
         try:
             payload = {
                 "email": self.email,
@@ -57,36 +62,56 @@ class AkileAccount:
             }
             
             print(f"{Color.CYAN} 登录账号: {self.email}{Color.END}")
-            response = self.session.post(
-                "https://api.akile.io/api/v1/user/login",
-                json=payload,
-                timeout=20
-            )
             
-            data = response.json()
+            # 发送登录请求
+            try:
+                response = self.session.post(
+                    "https://api.akile.io/api/v1/user/login",
+                    json=payload,
+                    timeout=20
+                )
+                response.raise_for_status()
+                data = response.json()
+            except requests.exceptions.Timeout:
+                return None, "登录请求超时"
+            except requests.exceptions.RequestException as e:
+                return None, f"网络请求失败: {e}"
+            except json.JSONDecodeError:
+                return None, "服务器返回非JSON格式数据"
             
             # TOTP验证
             if data.get("status_code") == 0 and "二步验证" in data.get("status_msg", ""):
                 if not self.totp_secret:
                     return None, "需要TOTP但未配置密钥"
                 
-                totp = pyotp.TOTP(self.totp_secret)
-                payload["token"] = totp.now()
-                print(f"{Color.YELLOW} 生成TOTP验证码{Color.END}")
-                
-                verify_response = self.session.post(
-                    "https://api.akile.io/api/v1/user/login",
-                    json=payload,
-                    timeout=20
-                )
-                verify_data = verify_response.json()
-                
-                if verify_data.get("status_code") == 0:
-                    return verify_data.get("data", {}).get("token"), None
-                return None, verify_data.get("status_msg", "TOTP验证失败")
+                try:
+                    totp = pyotp.TOTP(self.totp_secret)
+                    payload["token"] = totp.now()
+                    print(f"{Color.YELLOW} 生成TOTP验证码{Color.END}")
+                    
+                    verify_response = self.session.post(
+                        "https://api.akile.io/api/v1/user/login",
+                        json=payload,
+                        timeout=20
+                    )
+                    verify_response.raise_for_status()
+                    verify_data = verify_response.json()
+                    
+                    if verify_data.get("status_code") == 0:
+                        token = verify_data.get("data", {}).get("token")
+                        if not token:
+                            return None, "TOTP验证成功但未获取到Token"
+                        return token, None
+                    return None, verify_data.get("status_msg", "TOTP验证失败")
+                except Exception as e:
+                    return None, f"TOTP验证过程出错: {e}"
             
+            # 检查登录结果
             if data.get("status_code") == 0:
-                return data.get("data", {}).get("token"), None
+                token = data.get("data", {}).get("token")
+                if not token:
+                    return None, "登录成功但未获取到Token"
+                return token, None
                 
             return None, data.get("status_msg", "登录失败")
             
