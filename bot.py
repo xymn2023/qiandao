@@ -85,14 +85,47 @@ DEFAULT_HOUR, DEFAULT_MINUTE = 0, 10
 # ========== 工具函数 ==========
 
 def load_json(filename, default):
-    if os.path.exists(filename):
-        with open(filename, "r", encoding="utf-8") as f:
-            return json.load(f)
+    """
+    安全地加载JSON文件
+    
+    Args:
+        filename: 文件名
+        default: 默认值，当文件不存在或读取失败时返回
+        
+    Returns:
+        解析后的JSON数据或默认值
+    """
+    try:
+        if os.path.exists(filename):
+            with open(filename, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except (json.JSONDecodeError, IOError, OSError) as e:
+        print(f"⚠️ 读取JSON文件 {filename} 失败: {e}")
     return default
 
 def save_json(filename, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """
+    安全地保存数据到JSON文件
+    
+    Args:
+        filename: 文件名
+        data: 要保存的数据
+        
+    Returns:
+        bool: 保存是否成功
+    """
+    try:
+        # 确保目录存在（只有当filename包含路径时才创建目录）
+        dirname = os.path.dirname(filename)
+        if dirname:  # 只有当dirname不为空时才创建目录
+            os.makedirs(dirname, exist_ok=True)
+        
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except (IOError, OSError, TypeError) as e:
+        print(f"❌ 保存JSON文件 {filename} 失败: {e}")
+        return False
 
 # 白名单
 
@@ -235,96 +268,287 @@ def parse_time_input(time_str):
 # 日志保存函数
 
 def save_task_log(module, username, status, message, error=None):
-    now = get_shanghai_now().strftime('%Y%m%d_%H%M%S')
-    log_dir = os.path.join(module)
-    os.makedirs(log_dir, exist_ok=True)
-    if status == 'success':
-        log_file = os.path.join(log_dir, f"{now}_success.log")
-    else:
-        log_file = os.path.join(log_dir, f"{now}_error.log")
-    with open(log_file, 'a', encoding='utf-8') as f:
-        f.write(f"账号: {username}\n时间: {now}\n状态: {status}\n结果: {message}\n")
-        if error:
-            f.write(f"错误原因: {error}\n")
-        f.write("-"*30+"\n")
+    """
+    保存任务执行日志
+    
+    Args:
+        module: 模块名称
+        username: 用户名
+        status: 状态 (success/error)
+        message: 消息
+        error: 错误信息
+    """
+    try:
+        now = get_shanghai_now().strftime('%Y%m%d_%H%M%S')
+        log_dir = os.path.join(module)
+        os.makedirs(log_dir, exist_ok=True)
+        
+        if status == 'success':
+            log_file = os.path.join(log_dir, f"{now}_success.log")
+        else:
+            log_file = os.path.join(log_dir, f"{now}_error.log")
+        
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(f"账号: {username}\n时间: {now}\n状态: {status}\n结果: {message}\n")
+            if error:
+                f.write(f"错误原因: {error}\n")
+            f.write("-"*30+"\n")
+    except Exception as e:
+        print(f"❌ 保存任务日志失败: {e}")
 
 # 操作日志保存函数
 
 def save_op_log(module, username, op_type, task_id, status, message, error=None):
-    now = get_shanghai_now().strftime('%Y%m%d_%H%M%S')
-    log_dir = os.path.join(module)
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"{now}_op.log")
-    with open(log_file, 'a', encoding='utf-8') as f:
-        f.write(f"操作: {op_type}\n账号: {username}\n任务ID: {task_id}\n时间: {now}\n状态: {status}\n结果: {message}\n")
-        if error:
-            f.write(f"错误原因: {error}\n")
-        f.write("-"*30+"\n")
+    """
+    保存操作日志
+    
+    Args:
+        module: 模块名称
+        username: 用户名
+        op_type: 操作类型
+        task_id: 任务ID
+        status: 状态
+        message: 消息
+        error: 错误信息
+    """
+    try:
+        now = get_shanghai_now().strftime('%Y%m%d_%H%M%S')
+        log_dir = os.path.join(module)
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, f"{now}_op.log")
+        
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(f"操作: {op_type}\n账号: {username}\n任务ID: {task_id}\n时间: {now}\n状态: {status}\n结果: {message}\n")
+            if error:
+                f.write(f"错误原因: {error}\n")
+            f.write("-"*30+"\n")
+    except Exception as e:
+        print(f"❌ 保存操作日志失败: {e}")
+
+def get_failed_tasks(user_id):
+    """
+    获取用户失败的任务列表
+    
+    Args:
+        user_id: 用户ID
+        
+    Returns:
+        list: 失败的任务列表，每个元素包含任务ID、模块、用户名等信息
+    """
+    failed_tasks = []
+    today = get_shanghai_now().strftime('%Y%m%d')
+    
+    # 获取用户的所有任务
+    user_tasks = get_user_tasks(user_id)
+    
+    for task_id, task in user_tasks.items():
+        module = task['module']
+        username = task.get('username', '')
+        
+        # 检查今天是否有错误日志
+        log_dir = module
+        error_logs = glob.glob(os.path.join(log_dir, f"{today}_*_error.log"))
+        
+        # 检查错误日志中是否包含该用户名的记录
+        for log_file in error_logs:
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    if username in content:
+                        failed_tasks.append({
+                            'task_id': task_id,
+                            'module': module,
+                            'username': username,
+                            'hour': task['hour'],
+                            'minute': task['minute'],
+                            'error_log': log_file
+                        })
+                        break  # 找到一个错误日志就够了
+            except Exception as e:
+                print(f"❌ 读取错误日志失败: {e}")
+    
+    return failed_tasks
+
+def execute_task_manually(task_id, user_id):
+    """
+    手动执行指定任务
+    
+    Args:
+        task_id: 任务ID
+        user_id: 用户ID
+        
+    Returns:
+        tuple: (success, message) 执行结果
+    """
+    try:
+        # 获取任务信息
+        tasks = load_scheduled_tasks()
+        if task_id not in tasks:
+            return False, "❌ 任务不存在"
+        
+        task = tasks[task_id]
+        
+        # 验证任务所有者
+        if str(task.get('user_id')) != str(user_id):
+            return False, "❌ 您无权执行此任务"
+        
+        # 检查任务是否启用
+        if not task.get('enabled', True):
+            return False, "❌ 任务已禁用"
+        
+        # 执行任务
+        if task_scheduler:
+            task_scheduler._execute_task(task)
+            return True, "✅ 任务已提交执行，请稍后查看结果"
+        else:
+            return False, "❌ 任务调度器未启动"
+            
+    except Exception as e:
+        return False, f"❌ 执行任务失败: {e}"
 
 # 定时任务执行器（新逻辑）
 class TaskScheduler:
+    """
+    定时任务调度器
+    
+    负责管理和执行用户的定时签到任务，支持多线程安全操作
+    """
+    
     def __init__(self, application, loop):
+        """
+        初始化调度器
+        
+        Args:
+            application: Telegram应用实例
+            loop: 主事件循环
+        """
         self.application = application
         self.loop = loop
         self.running = False
         self.thread = None
+    
     def start(self):
+        """启动定时任务调度器"""
         if self.running:
+            print("⚠️ 定时任务调度器已在运行中")
             return
-        self.running = True
-        self.thread = threading.Thread(target=self._scheduler_loop, daemon=True)
-        self.thread.start()
-        print("✅ 定时任务调度器已启动")
+        
+        try:
+            self.running = True
+            self.thread = threading.Thread(target=self._scheduler_loop, daemon=True)
+            self.thread.start()
+            print("✅ 定时任务调度器已启动")
+        except Exception as e:
+            self.running = False
+            print(f"❌ 启动定时任务调度器失败: {e}")
+            raise
+    
     def stop(self):
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=5)
-        print("⏹️ 定时任务调度器已停止")
+        """停止定时任务调度器"""
+        if not self.running:
+            return
+        
+        try:
+            self.running = False
+            if self.thread and self.thread.is_alive():
+                self.thread.join(timeout=5)
+                if self.thread.is_alive():
+                    print("⚠️ 定时任务调度器线程未能在5秒内正常停止")
+            print("⏹️ 定时任务调度器已停止")
+        except Exception as e:
+            print(f"❌ 停止定时任务调度器时出错: {e}")
+    
     def _scheduler_loop(self):
+        """
+        调度器主循环
+        
+        每分钟检查一次是否有需要执行的任务
+        """
         while self.running:
             try:
                 now = get_shanghai_now()
                 tasks = load_scheduled_tasks()
-                for task in tasks.values():
+                
+                for task_id, task in tasks.items():
+                    if not self.running:
+                        break
+                    
+                    # 检查任务是否启用
                     if not task.get("enabled", True):
                         continue
+                    
+                    # 检查是否到了执行时间
                     if now.hour == task["hour"] and now.minute == task["minute"]:
                         self._execute_task(task)
+                
+                # 等待1分钟后再次检查
                 time.sleep(60)
+                
             except Exception as e:
-                print(f"❌ 定时任务调度器错误: {e}")
+                print(f"❌ 定时任务调度器循环错误: {e}")
+                # 发生错误时等待1分钟后继续
                 time.sleep(60)
     def _execute_task(self, task):
+        """
+        执行单个定时任务
+        
+        Args:
+            task: 任务信息字典，包含模块、用户名、时间等信息
+        """
         try:
             print(f"🔄 执行定时任务: {task['module']} {task['hour']:02d}:{task['minute']:02d} (用户: {task['user_id']}, 账号: {task['username']})")
-            user_id = int(task['user_id'])
-            if is_banned(user_id):
-                print(f"❌ 用户 {user_id} 已达到每日使用限制")
+            
+            # 验证任务数据完整性
+            required_fields = ['user_id', 'module', 'username', 'hour', 'minute']
+            for field in required_fields:
+                if field not in task:
+                    print(f"❌ 任务数据不完整，缺少字段: {field}")
+                    return
+            
+            # 解析用户ID
+            try:
+                user_id = int(task['user_id'])
+            except (ValueError, TypeError):
+                print(f"❌ 无效的用户ID: {task['user_id']}")
                 return
+            
+            # 检查用户是否被封禁
+            if is_banned(user_id):
+                print(f"❌ 用户 {user_id} 已被封禁，跳过任务执行")
+                return
+            
+            # 检查用户每日使用限制
             can_use, usage = check_daily_limit(user_id)
             if not can_use:
-                print(f"❌ 用户 {user_id} 已达到每日使用限制")
+                print(f"❌ 用户 {user_id} 已达到每日使用限制 ({usage}/{get_daily_limit(user_id)})")
                 return
+            
             module = task['module']
             username = task['username']
+            
+            # 检查用户凭证文件是否存在
             user_file = os.path.join(module, 'users', f"{username}.json")
             if not os.path.exists(user_file):
                 err_msg = f"❌ 用户 {user_id} 的 {module} 账号 {username} 凭证不存在"
                 print(err_msg)
                 save_task_log(module, username, 'error', '凭证不存在', error=err_msg)
-                # 用主线程事件循环安全推送消息
-                if self.loop and self.loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        self.application.bot.send_message(
-                            chat_id=user_id,
-                            text=err_msg,
-                            parse_mode=ParseMode.HTML
-                        ),
-                        self.loop
-                    )
+                
+                # 安全地发送错误消息到用户
+                self._send_task_result(user_id, err_msg)
                 return
-            with open(user_file, 'r', encoding='utf-8') as f:
-                user_info = json.load(f)
+            
+            # 读取用户凭证
+            try:
+                with open(user_file, 'r', encoding='utf-8') as f:
+                    user_info = json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                err_msg = f"❌ 读取用户凭证失败: {e}"
+                print(err_msg)
+                save_task_log(module, username, 'error', '读取凭证失败', error=str(e))
+                self._send_task_result(user_id, err_msg)
+                return
+            
+            # 执行签到任务
             try:
                 if module == 'Acck':
                     result = acck_signin(user_info['username'], user_info['password'], user_info.get('totp'))
@@ -332,32 +556,65 @@ class TaskScheduler:
                     result = akile_signin(user_info['username'], user_info['password'], user_info.get('totp'))
                 else:
                     raise Exception(f"未知模块: {module}")
+                
+                # 更新使用统计
                 increment_daily_usage(user_id)
                 record_usage(user_id)
+                
+                # 更新任务最后执行时间
                 task['last_run'] = get_shanghai_now().isoformat()
                 save_scheduled_tasks(load_scheduled_tasks())
+                
+                # 判断执行结果
                 status = "success" if ("成功" in result or "已签到" in result) else "error"
                 message = f"🕐 定时任务执行结果\n\n平台: {module}\n账号: {username}\n时间: {task['hour']:02d}:{task['minute']:02d}\n状态: {'✅ 成功' if status=='success' else '❌ 失败'}\n结果: {result}"
+                
+                # 保存任务日志
                 save_task_log(module, username, status, result)
-                # 用主线程事件循环安全推送消息
-                if self.loop and self.loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        self.application.bot.send_message(
-                            chat_id=user_id,
-                            text=message,
-                            parse_mode=ParseMode.HTML
-                        ),
-                        self.loop
-                    )
+                
+                # 发送结果消息
+                self._send_task_result(user_id, message)
+                
                 print(f"✅ 定时任务执行完成: {task['module']} {task['hour']:02d}:{task['minute']:02d} 账号: {username}")
+                
             except Exception as e:
-                err_msg = f"❌ 执行定时任务错误 {task['id']}: {e}"
+                err_msg = f"❌ 执行定时任务错误 {task.get('id', 'unknown')}: {e}"
                 save_task_log(module, username, 'error', '执行任务异常', error=str(e))
-                # 用同步方式推送错误信息
-                send_telegram_sync(TELEGRAM_BOT_TOKEN, user_id, err_msg)
+                self._send_task_result(user_id, err_msg)
                 print(err_msg)
+                
         except Exception as e:
-            print(f"❌ 执行定时任务错误 {task['id']}: {e}")
+            print(f"❌ 执行定时任务时发生未知错误: {e}")
+    
+    def _send_task_result(self, user_id, message):
+        """
+        安全地发送任务结果消息
+        
+        Args:
+            user_id: 用户ID
+            message: 消息内容
+        """
+        try:
+            # 优先使用异步方式发送消息
+            if self.loop and self.loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self.application.bot.send_message(
+                        chat_id=user_id,
+                        text=message,
+                        parse_mode=ParseMode.HTML
+                    ),
+                    self.loop
+                )
+            else:
+                # 备用同步方式
+                send_telegram_sync(TELEGRAM_BOT_TOKEN, user_id, message)
+        except Exception as e:
+            print(f"❌ 发送任务结果消息失败: {e}")
+            # 最后的备用方案
+            try:
+                send_telegram_sync(TELEGRAM_BOT_TOKEN, user_id, message)
+            except Exception:
+                print(f"❌ 所有消息发送方式都失败了")
 
 task_scheduler = None
 
@@ -598,7 +855,17 @@ async def input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text('操作已取消。')
+    chat_id = update.effective_chat.id
+    msg_id = context.user_data.get('last_tasklist_msg_id')
+    if msg_id:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            await update.message.reply_text('操作已取消。')
+        except Exception:
+            await update.message.reply_text('操作已取消，但消息撤回失败。')
+        context.user_data.pop('last_tasklist_msg_id', None)
+    else:
+        await update.message.reply_text('操作已取消。')
     return ConversationHandler.END
 
 # 管理员授权命令
@@ -624,15 +891,26 @@ async def allow_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== 用户自助命令 ==========
 async def send_and_auto_delete(message_func, text, context, delay=30, **kwargs):
+    """
+    发送消息并在指定时间后自动撤回
+    
+    Args:
+        message_func: 消息发送函数
+        text: 消息内容
+        context: Telegram上下文
+        delay: 撤回延迟时间（秒）
+        **kwargs: 其他参数
+    """
     msg = await message_func(text, **kwargs)
-    print(f"[DEBUG] 已发送消息，chat_id={msg.chat_id}, message_id={msg.message_id}, 内容={text}")
+    
     async def _auto_delete():
         await asyncio.sleep(delay)
         try:
             await context.bot.delete_message(chat_id=msg.chat_id, message_id=msg.message_id)
-            print(f"[DEBUG] 已自动撤回消息 chat_id={msg.chat_id}, message_id={msg.message_id}")
-        except Exception as e:
-            print(f"[ERROR] 自动撤回失败: chat_id={msg.chat_id}, message_id={msg.message_id}, 错误: {e}")
+        except Exception:
+            # 消息撤回失败，通常是因为消息已被删除或权限不足
+            pass
+    
     asyncio.create_task(_auto_delete())
 
 async def me_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -902,20 +1180,13 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/unbind - 注销/解绑我的账号信息\n"
         "/help - 显示本帮助\n"
         "/cancel - 取消当前操作\n"
-        "\n管理员专用：\n"
-        "/allow <用户ID> - 授权用户（加入白名单）\n"
-        "/disallow <用户ID> - 移除白名单\n"
-        "/ban <用户ID> - 封禁用户（加入黑名单）\n"
-        "/unban <用户ID> - 解封用户\n"
-        "/stats - 查看所有用户使用统计\n"
-        "/top - 查看活跃用户排行\n"
-        "/broadcast <内容> - 向所有用户广播消息\n"
-        "/export - 导出所有数据\n"
-        "/setlimit <id> <次数> - 设置每日签到次数上限\n"
-        "/restart - 重启Bot\n"
-        "/shutdown - 关闭Bot\n"
     )
-    await update.message.reply_text(help_text, reply_markup=ReplyKeyboardRemove())
+    msg = await update.message.reply_text(help_text, reply_markup=ReplyKeyboardRemove())
+    await asyncio.sleep(5)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
 
 # ========== 注册命令 ==========
 
@@ -1285,11 +1556,18 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ---
 💡 机器人已准备就绪，开始处理您的请求..."""
         await context.bot.send_message(chat_id=update.effective_chat.id, text=status_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
+    
     tasks = get_user_tasks(user_id)
     if not tasks:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="📋 您还没有添加任何定时任务\n使用 /add 添加定时任务")
         return ConversationHandler.END
+    
+    # 获取失败的任务
+    failed_tasks = get_failed_tasks(user_id)
+    failed_task_ids = {t['task_id']: t for t in failed_tasks}
+    
     message = "📋 您的定时任务列表：\n\n"
+    failed_task_number_map = {}  # 编号到task_id映射，仅失败任务
     for task_id, task in tasks.items():
         status = "✅ 启用" if task.get('enabled', True) else "❌ 禁用"
         last_run = "从未运行"
@@ -1298,10 +1576,22 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 last_run = datetime.fromisoformat(task['last_run']).strftime('%Y-%m-%d %H:%M:%S')
             except:
                 pass
-        message += f"🔹 {task['module']} {task['hour']:02d}:{task['minute']:02d} 账号: {task.get('username','')}\n"
+        # 编号规则：如10:01→1001，0:10→010
+        hour = int(task['hour'])
+        minute = int(task['minute'])
+        number = f"{hour:02d}{minute:02d}".lstrip('0') or '0'
+        # 检查是否是失败的任务
+        is_failed = task_id in failed_task_ids
+        status_icon = "🔴" if is_failed else "🟢"
+        number_str = f"[{number}] " if is_failed else ""
+        if is_failed:
+            failed_task_number_map[number] = task_id
+        message += f"{status_icon} {number_str}{task['module']} {task['hour']:02d}:{task['minute']:02d} 账号: {task.get('username','')}\n"
         message += f"   状态: {status}\n"
         message += f"   最后运行: {last_run}\n"
         message += f"   任务ID: {task_id}\n\n"
+    # 保存编号映射到用户会话，供后续手动执行用
+    context.user_data['failed_task_number_map'] = failed_task_number_map
     # 显示当天日志摘要
     today = get_shanghai_now().strftime('%Y%m%d')
     log_summary = "\n📑 今日签到日志摘要：\n"
@@ -1321,15 +1611,25 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines = f.readlines()
                 log_summary += f"❌ 失败：{''.join(lines)}\n"
     message += log_summary
-    # 新增：底部操作按钮
+    # 构建操作按钮
     buttons = [
         [InlineKeyboardButton("➕ 继续添加任务", callback_data="all_add")],
         [InlineKeyboardButton("❌ 删除任务", callback_data="all_del")]
     ]
+    # 如果有失败的任务，添加手动执行按钮
+    if failed_task_number_map:
+        buttons.append([InlineKeyboardButton("🔧 手动执行失败任务", callback_data="all_manual_execute")])
     reply_markup = InlineKeyboardMarkup(buttons)
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=message + "\n如需退出请发送 /cancel", reply_markup=reply_markup)
+    msg = await context.bot.send_message(chat_id=update.effective_chat.id, text=message + "\n如需退出请发送 /cancel", reply_markup=reply_markup)
+    context.user_data['last_tasklist_msg_id'] = msg.message_id
     # 处理按钮回调
     context.user_data['all_cmd_from_list'] = True
+    # 10秒后自动撤回
+    await asyncio.sleep(10)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
     return "ALL_CMD_ACTION"
 
 # 1. add_confirm
@@ -1413,15 +1713,64 @@ async def all_cmd_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 跳转到删除任务流程
         await del_cmd(update, context)
         return "DEL_SELECT_TASK"
+    elif query.data == "all_manual_execute":
+        # 进入手动执行编号输入流程
+        failed_map = context.user_data.get('failed_task_number_map', {})
+        if not failed_map:
+            await query.edit_message_text("✅ 当前没有失败的任务需要手动执行！")
+            return ConversationHandler.END
+        msg = "🔧 请输入要手动执行的任务编号（如1001），或发送 /cancel 退出：\n\n"
+        for number, task_id in failed_map.items():
+            msg += f"[{number}] 任务ID: {task_id}\n"
+        await query.edit_message_text(msg)
+        return "MANUAL_EXECUTE_INPUT"
+    elif query.data == "all_back_to_list":
+        # 返回任务列表
+        await all_cmd(update, context)
+        return "ALL_CMD_ACTION"
     else:
         await query.edit_message_text("未知操作，请重试。")
         return ConversationHandler.END
 
-# 新增：all_cmd_from_list的对话处理器
+# 新增：手动执行编号输入处理
+async def manual_execute_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    if text == "/cancel":
+        await update.message.reply_text("已退出手动执行流程。", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+    failed_map = context.user_data.get('failed_task_number_map', {})
+    if text not in failed_map:
+        await update.message.reply_text(f"❌ 无效编号 [{text}]，请重新输入，或发送 /cancel 退出。")
+        return "MANUAL_EXECUTE_INPUT"
+    task_id = failed_map[text]
+    success, message = execute_task_manually(task_id, user_id)
+    if success:
+        # 执行成功后刷新失败任务
+        failed_tasks = get_failed_tasks(user_id)
+        if not failed_tasks:
+            await update.message.reply_text(f"✅ {message}\n\n🎉 当前没有失败的任务了！", reply_markup=ReplyKeyboardRemove())
+            # 自动返回主菜单或任务列表
+            await all_cmd(update, context)
+            return ConversationHandler.END
+        else:
+            # 重新展示编号输入
+            context.user_data['failed_task_number_map'] = {f"{int(t['hour']):02d}{int(t['minute']):02d}".lstrip('0') or '0': t['task_id'] for t in failed_tasks}
+            msg = f"✅ {message}\n\n📊 当前还有 {len(failed_tasks)} 个失败的任务，请继续输入编号，或发送 /cancel 退出：\n"
+            for number, tid in context.user_data['failed_task_number_map'].items():
+                msg += f"[{number}] 任务ID: {tid}\n"
+            await update.message.reply_text(msg)
+            return "MANUAL_EXECUTE_INPUT"
+    else:
+        await update.message.reply_text(f"❌ {message}\n请重新输入编号，或发送 /cancel 退出。")
+        return "MANUAL_EXECUTE_INPUT"
+
+# ConversationHandler注册
 all_cmd_conv_handler = ConversationHandler(
     entry_points=[CommandHandler('list', all_cmd)],
     states={
-        "ALL_CMD_ACTION": [CallbackQueryHandler(all_cmd_action, pattern="^(all_add|all_del)$")],
+        "ALL_CMD_ACTION": [CallbackQueryHandler(all_cmd_action, pattern="^(all_add|all_del|all_manual_execute|all_back_to_list)$")],
+        "MANUAL_EXECUTE_INPUT": [MessageHandler(filters.TEXT & ~filters.COMMAND, manual_execute_input)],
         # 复用add/del的后续状态
         "ADD_SELECT_MODULE": [CallbackQueryHandler(add_select_module, pattern="^add_.*$")],
         "ADD_INPUT_USERNAME": [MessageHandler(filters.TEXT & ~filters.COMMAND, add_input_username)],
@@ -1479,20 +1828,9 @@ def main():
     )
     app.add_handler(conv_handler)
     
-    app.add_handler(CommandHandler('allow', allow_user))
     app.add_handler(CommandHandler('me', me_cmd))
     app.add_handler(CommandHandler('unbind', unbind_cmd))
     app.add_handler(CommandHandler('help', help_cmd))
-    app.add_handler(CommandHandler('ban', ban_user))
-    app.add_handler(CommandHandler('unban', unban_user))
-    app.add_handler(CommandHandler('disallow', disallow_user))
-    app.add_handler(CommandHandler('stats', stats_cmd))
-    app.add_handler(CommandHandler('top', top_cmd))
-    app.add_handler(CommandHandler('broadcast', broadcast_cmd))
-    app.add_handler(CommandHandler('export', export_cmd))
-    app.add_handler(CommandHandler('setlimit', setlimit_cmd))
-    app.add_handler(CommandHandler('restart', restart_cmd))
-    app.add_handler(CommandHandler('shutdown', shutdown_cmd))
     app.add_handler(CommandHandler('menu', menu_cmd))
     app.add_handler(CommandHandler('summary', summary_cmd))
     app.add_handler(add_conv_handler)
@@ -1508,15 +1846,33 @@ def main():
     app.run_polling(drop_pending_updates=True)
 
 def save_user_info(user_id, module, info):
-    """保存用户信息到对应模块的users目录，文件名为账号.json"""
-    module_dir = module
-    users_dir = os.path.join(module_dir, 'users')
-    os.makedirs(users_dir, exist_ok=True)
-    username = info['username']
-    info['user_id'] = user_id  # 记录归属用户
-    user_file = os.path.join(users_dir, f"{username}.json")
-    with open(user_file, 'w', encoding='utf-8') as f:
-        json.dump(info, f, ensure_ascii=False, indent=2)
+    """
+    保存用户信息到对应模块的users目录，文件名为账号.json
+    
+    Args:
+        user_id: 用户ID
+        module: 模块名称
+        info: 用户信息字典
+    """
+    try:
+        module_dir = module
+        users_dir = os.path.join(module_dir, 'users')
+        os.makedirs(users_dir, exist_ok=True)
+        
+        username = info.get('username')
+        if not username:
+            print(f"❌ 保存用户信息失败：缺少用户名")
+            return False
+            
+        info['user_id'] = user_id  # 记录归属用户
+        user_file = os.path.join(users_dir, f"{username}.json")
+        
+        with open(user_file, 'w', encoding='utf-8') as f:
+            json.dump(info, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"❌ 保存用户信息失败: {e}")
+        return False
 
 # 临时用户管理
 
@@ -1700,6 +2056,39 @@ def send_telegram_sync(token, chat_id, text):
         requests.post(url, json={"chat_id": chat_id, "text": text})
     except Exception as e:
         print(f"同步推送Telegram失败: {e}")
+
+# 处理手动执行任务选择
+async def manual_execute_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data.startswith("manual_execute_"):
+        task_id = query.data.replace("manual_execute_", "")
+        user_id = query.from_user.id
+        
+        # 执行任务
+        success, message = execute_task_manually(task_id, user_id)
+        
+        if success:
+            # 执行成功后，重新检查失败任务
+            failed_tasks = get_failed_tasks(user_id)
+            
+            if not failed_tasks:
+                result_message = f"✅ {message}\n\n🎉 恭喜！当前没有失败的任务了！"
+            else:
+                result_message = f"✅ {message}\n\n📊 当前还有 {len(failed_tasks)} 个失败的任务"
+            
+            buttons = [[InlineKeyboardButton("🔙 返回任务列表", callback_data="all_back_to_list")]]
+            reply_markup = InlineKeyboardMarkup(buttons)
+            await query.edit_message_text(result_message, reply_markup=reply_markup)
+        else:
+            buttons = [[InlineKeyboardButton("🔙 返回任务列表", callback_data="all_back_to_list")]]
+            reply_markup = InlineKeyboardMarkup(buttons)
+            await query.edit_message_text(f"❌ {message}", reply_markup=reply_markup)
+        
+        return "ALL_CMD_ACTION"
+    
+    return ConversationHandler.END
 
 if __name__ == '__main__':
     main() 

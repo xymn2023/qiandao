@@ -229,755 +229,235 @@ else
 fi
 PYTHON_IN_VENV="$SCRIPT_DIR/.venv/bin/python"
 
-# 检查虚拟环境是否存在
+# 检查虚拟环境是否存在，不存在时仅提示，不自动创建和启动bot.py
 if [ ! -f "$PYTHON_IN_VENV" ]; then
-    echo "⚠️ 检测到虚拟环境不存在，正在重新创建..."
-    cd "$SCRIPT_DIR"
-    if python3 -m venv .venv; then
-        echo "✅ 虚拟环境重新创建成功"
-        echo "📦 正在重新安装依赖包..."
-        "$PYTHON_IN_VENV" -m pip install --upgrade pip
-        if [ $? -ne 0 ]; then
-            echo "❌ 升级pip失败，请检查网络或依赖文件"
-            exit 1
-        fi
-        "$PYTHON_IN_VENV" -m pip install -r requirements.txt
-        if [ $? -ne 0 ]; then
-            echo "❌ 依赖安装失败，请检查网络或依赖文件"
-            exit 1
-        fi
-        "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
-        if [ $? -ne 0 ]; then
-            echo "❌ 安装python-telegram-bot[job-queue]失败，请检查网络或依赖文件"
-            exit 1
-        fi
-        echo "✅ 依赖重新安装完成"
-    else
-        echo "❌ 虚拟环境创建失败，请检查 python3-venv 是否正确安装"
-        exit 1
-    fi
+    echo "⚠️ 检测到虚拟环境不存在，请先通过菜单4或5检测/修复依赖环境！"
 fi
 
-# --- 函数定义区 ---
-find_bot_pid() {
-    pgrep -f "$PYTHON_IN_VENV -u bot.py" || true
-}
-
-# 检查和修复虚拟环境
-check_and_fix_venv() {
-    echo "--- 检查/修复虚拟环境 ---"
-    cd "$SCRIPT_DIR" || exit
-    
-    if [ ! -f "$PYTHON_IN_VENV" ]; then
-        echo "⚠️ 检测到虚拟环境不存在，正在重新创建..."
-        if python3 -m venv .venv; then
-            echo "✅ 虚拟环境重新创建成功"
-            echo "📦 正在重新安装依赖包..."
-            "$PYTHON_IN_VENV" -m pip install --upgrade pip
-            if [ $? -ne 0 ]; then
-                echo "❌ 升级pip失败，请检查网络或依赖文件"
-                return 1
-            fi
-            "$PYTHON_IN_VENV" -m pip install -r requirements.txt
-            if [ $? -ne 0 ]; then
-                echo "❌ 依赖安装失败，请检查网络或依赖文件"
-                return 1
-            fi
-            "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
-            if [ $? -ne 0 ]; then
-                echo "❌ 安装python-telegram-bot[job-queue]失败，请检查网络或依赖文件"
-                return 1
-            fi
-            echo "✅ 依赖重新安装完成"
-        else
-            echo "❌ 虚拟环境创建失败，请检查 python3-venv 是否正确安装"
-            return 1
-        fi
+# ========== 命令行菜单 ==========
+# 在菜单顶部动态显示机器人运行状态
+show_menu() {
+    local pid=$(find_bot_pid)
+    if [ -n "$pid" ]; then
+        STATUS_ICON="✔️"
+        STATUS_TEXT="运行中 (PID: $pid)"
     else
-        echo "✅ 虚拟环境存在"
-        
-        # 测试虚拟环境是否正常工作
-        if ! "$PYTHON_IN_VENV" -c "import sys; print('Python version:', sys.version)" 2>/dev/null; then
-            echo "⚠️ 虚拟环境可能损坏，正在重新创建..."
-            rm -rf .venv
-            if python3 -m venv .venv; then
-                echo "✅ 虚拟环境重新创建成功"
-                echo "📦 正在重新安装依赖包..."
-                "$PYTHON_IN_VENV" -m pip install --upgrade pip
-                if [ $? -ne 0 ]; then
-                    echo "❌ 升级pip失败，请检查网络或依赖文件"
-                    return 1
-                fi
-                "$PYTHON_IN_VENV" -m pip install -r requirements.txt
-                if [ $? -ne 0 ]; then
-                    echo "❌ 依赖安装失败，请检查网络或依赖文件"
-                    return 1
-                fi
-                "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
-                if [ $? -ne 0 ]; then
-                    echo "❌ 安装python-telegram-bot[job-queue]失败，请检查网络或依赖文件"
-                    return 1
-                fi
-                echo "✅ 依赖重新安装完成"
-            else
-                echo "❌ 虚拟环境创建失败"
-                return 1
-            fi
-        else
-            echo "✅ 虚拟环境工作正常"
-        fi
+        STATUS_ICON="❌"
+        STATUS_TEXT="未运行"
     fi
-    
-    echo "📊 虚拟环境信息："
-    "$PYTHON_IN_VENV" -c "import sys; print('Python 路径:', sys.executable); print('Python 版本:', sys.version)"
-    echo ""
+    echo -e "\n====== 签到机器人管理菜单 ======"
+    echo -e "机器人运行状态: $STATUS_ICON $STATUS_TEXT"
+    echo "1. 启动/重启机器人"
+    echo "2. 停止机器人"
+    echo "3. 查看运行状态"
+    echo "4. 查看实时日志"
+    echo "5. 检测环境依赖"
+    echo "6. 修复依赖环境"
+    echo "7. 更新脚本"
+    echo "8. 卸载(删除所有文件)"
+    echo "0. 退出菜单(不影响后台运行)"
+    echo "##.使用 qiandao-bot 唤醒脚本##"
+    echo "**.     任意键返回主菜单"
+    echo "==============================="
 }
 
-perform_update() {
-    echo "--- 检查更新 ---"
-    cd "$SCRIPT_DIR" || exit
-    git config --global --add safe.directory "$SCRIPT_DIR"
-    echo "正在暂存本地更改以避免冲突..."
-    git stash push -m "autostash_by_script" >/dev/null
-    echo "正在从 GitHub 拉取最新版本..."
-    if git pull origin main; then
-        echo "正在恢复本地更改..."
-        if ! git stash pop >/dev/null 2>&1; then
-            echo "警告：自动恢复本地更改时可能存在冲突。请手动检查并解决：git status"
-            # 可以添加更详细的冲突处理逻辑
-        fi
-        echo "✅ 更新完成。正在重新安装依赖..."
-        "$PYTHON_IN_VENV" -m pip install --upgrade pip
-        if [ $? -ne 0 ]; then
-            echo "❌ 升级pip失败，请检查网络或依赖文件"
-            return 1
-        fi
-        "$PYTHON_IN_VENV" -m pip install -r requirements.txt
-        if [ $? -ne 0 ]; then
-            echo "❌ 依赖安装失败，请检查网络或依赖文件"
-            return 1
-        fi
-        "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
-        if [ $? -ne 0 ]; then
-            echo "❌ 安装python-telegram-bot[job-queue]失败，请检查网络或依赖文件"
-            return 1
-        fi
-        echo "✅ 依赖重新安装完成"
+# 检查bot.py是否运行，返回PID
+find_bot_pid() {
+    pgrep -f "$PYTHON_IN_VENV -u bot.py" || pgrep -f "python.*bot.py" || true
+}
+
+# 等待任意键返回主菜单
+wait_any_key() {
+    echo -e "\n[INFO] 按任意键返回主菜单..."
+    read -n 1 -s _
+}
+
+# 启动/重启机器人
+start_bot() {
+    cd "$SCRIPT_DIR"
+    local pid=$(find_bot_pid)
+    if [ -n "$pid" ]; then
+        echo "[INFO] 检测到bot.py正在运行(PID: $pid)，正在重启..."
+        kill "$pid"
+        sleep 2
+    fi
+    echo "[INFO] 启动bot.py..."
+    nohup "$PYTHON_IN_VENV" -u bot.py > bot.log 2>&1 &
+    sleep 1
+    newpid=$(find_bot_pid)
+    if [ -n "$newpid" ]; then
+        echo "[SUCCESS] bot.py已启动(PID: $newpid)"
     else
-        echo "❌ 更新失败，请检查网络或仓库状态"
+        echo "[ERROR] 启动失败，请检查日志"
+    fi
+    wait_any_key
+}
+
+# 停止机器人
+stop_bot() {
+    cd "$SCRIPT_DIR"
+    local pid=$(find_bot_pid)
+    if [ -n "$pid" ]; then
+        echo "[INFO] 停止bot.py (PID: $pid)..."
+        kill "$pid"
+        sleep 2
+        if ps -p "$pid" > /dev/null 2>&1; then
+            echo "[WARNING] 强制停止..."
+            kill -9 "$pid" 2>/dev/null
+        fi
+        echo "[SUCCESS] 已停止"
+    else
+        echo "[INFO] bot.py未在运行"
+    fi
+    wait_any_key
+}
+
+# 查看实时日志
+show_log() {
+    cd "$SCRIPT_DIR"
+    if [ ! -f bot.log ]; then
+        echo "[WARNING] 日志文件不存在，请先启动机器人！"
+        wait_any_key
+        return
+    fi
+    echo "[INFO] 按任意键返回主菜单"
+    tail -n 50 -f bot.log &
+    TAIL_PID=$!
+    read -n 1 -s _
+    kill $TAIL_PID 2>/dev/null
+}
+
+# 检测环境依赖
+check_env() {
+    echo "[检测环境]"
+    check_and_install_venv
+    if [ ! -f "$PYTHON_IN_VENV" ]; then
+        echo "[ERROR] 虚拟环境不存在"
+        wait_any_key
         return 1
     fi
+    "$PYTHON_IN_VENV" -m pip --version && "$PYTHON_IN_VENV" -m pip check
+    if [ $? -eq 0 ]; then
+        echo "[SUCCESS] 依赖环境完整"
+    else
+        echo "[WARNING] 依赖环境可能不完整"
+    fi
+    wait_any_key
 }
 
-# 继续执行后续代码
+# 修复依赖环境
+fix_env() {
+    if [ -f "$PYTHON_IN_VENV" ]; then
+        echo "[INFO] 虚拟环境已存在，跳过重建"
+    else
+        echo "[INFO] 正在创建虚拟环境..."
+        python3 -m venv .venv || { echo "[ERROR] 创建虚拟环境失败"; wait_any_key; return 1; }
+    fi
+    "$PYTHON_IN_VENV" -m pip install --upgrade pip
+    "$PYTHON_IN_VENV" -m pip install -r requirements.txt
+    "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
+    echo "[SUCCESS] 依赖修复完成"
+    # 检查并修复全局命令注册
+    echo "[INFO] 检查qiandao-bot全局命令注册..."
+    if [ "$IS_ROOT" = "1" ]; then
+        if [ ! -L /usr/local/bin/qiandao-bot ] || [ "$(readlink -f /usr/local/bin/qiandao-bot)" != "$SCRIPT_DIR/start.sh" ]; then
+            ln -sf "$SCRIPT_DIR/start.sh" /usr/local/bin/qiandao-bot
+            chmod +x /usr/local/bin/qiandao-bot
+            echo "[SUCCESS] 已修复全局命令(软链)：qiandao-bot"
+        else
+            echo "[INFO] 全局命令(软链)已存在"
+        fi
+    else
+        if ! grep -q "alias qiandao-bot=" ~/.bashrc; then
+            echo "$ALIAS_CMD" >> ~/.bashrc
+            echo "alias 已添加到 ~/.bashrc，请运行 source ~/.bashrc 后使用 qiandao-bot"
+            echo "[SUCCESS] 已修复全局命令(alias)：qiandao-bot"
+        else
+            echo "[INFO] 全局命令(alias)已存在"
+        fi
+    fi
+    wait_any_key
+}
 
-def add_scheduled_task(user_id, module, username, hour, minute):
-    tasks = load_scheduled_tasks()
-    task_id = f"{user_id}_{module}_{username}_{hour:02d}{minute:02d}"
-    task = {
-        "id": task_id,
-        "user_id": str(user_id),
-        "module": module,
-        "username": username,
-        "hour": hour,
-        "minute": minute,
-        "enabled": True,
-        "created_at": get_shanghai_now().isoformat(),
-        "last_run": None
-    }
-    tasks[task_id] = task
-    save_scheduled_tasks(tasks)
-    return True, task_id
+# 更新脚本（保留.env）
+update_script() {
+    echo "[INFO] 正在从GitHub拉取最新代码..."
+    git fetch origin main
+    git reset --hard origin/main
+    if [ -f .env ]; then
+        echo "[INFO] 保留.env配置"
+        mv .env /tmp/qiandao_env_backup
+    fi
+    git pull origin main
+    if [ -f /tmp/qiandao_env_backup ]; then
+        mv /tmp/qiandao_env_backup .env
+    fi
+    echo "[SUCCESS] 更新完成"
+    wait_any_key
+}
 
-def remove_scheduled_task(task_id, user_id):
-    tasks = load_scheduled_tasks()
-    if task_id not in tasks:
-        return False, "任务不存在"
-    task = tasks[task_id]
-    if str(task["user_id"]) != str(user_id) and not is_admin(int(user_id)):
-        return False, "无权限删除此任务"
-    del tasks[task_id]
-    save_scheduled_tasks(tasks)
-    return True, "任务已删除"
+# 卸载（删除所有文件）
+uninstall_all() {
+    echo "[WARNING] 即将删除本项目所有文件，包括缓存和日志！"
+    read -p "确认卸载？(y/n): " confirm
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        cd ..
+        rm -rf "$SCRIPT_DIR"
+        echo "[SUCCESS] 已卸载并删除全部文件"
+        wait_any_key
+        exit 0
+    else
+        echo "[INFO] 已取消卸载"
+        wait_any_key
+    fi
+}
 
-def get_user_tasks(user_id):
-    tasks = load_scheduled_tasks()
-    return {tid: t for tid, t in tasks.items() if str(t["user_id"]) == str(user_id)}
+# 注册全局命令
+register_global() {
+    if [ "$IS_ROOT" = "1" ]; then
+        ln -sf "$SCRIPT_DIR/start.sh" /usr/local/bin/qiandao-bot
+        chmod +x /usr/local/bin/qiandao-bot
+        echo "[SUCCESS] 已注册全局命令：qiandao-bot"
+    else
+        if ! grep -q "alias qiandao-bot=" ~/.bashrc; then
+            echo "$ALIAS_CMD" >> ~/.bashrc
+            echo "alias 已添加到 ~/.bashrc，请运行 source ~/.bashrc 后使用 qiandao-bot"
+        fi
+        echo "[SUCCESS] 已注册全局命令：qiandao-bot (alias)"
+    fi
+    wait_any_key
+}
 
-def parse_time_input(time_str):
-    """解析时间输入，支持 HH:MM 格式"""
-    try:
-        if ':' in time_str:
-            hour, minute = map(int, time_str.split(':'))
-        else:
-            hour, minute = map(int, time_str.split('.'))
-        
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return (True, hour, minute)
-        else:
-            return (False, 0, "时间格式错误：小时应在0-23之间，分钟应在0-59之间")
-    except:
-        return (False, 0, "时间格式错误：请使用 HH:MM 格式，如 8:30")
+# 检查运行状态
+check_status() {
+    cd "$SCRIPT_DIR"
+    local pid=$(find_bot_pid)
+    if [ -n "$pid" ]; then
+        echo "[STATUS] bot.py 正在运行 (PID: $pid)"
+        ps -p "$pid" -o pid,etime,cmd
+    else
+        echo "[STATUS] bot.py 未在运行"
+    fi
+    wait_any_key
+}
 
-# 日志保存函数
-
-def save_task_log(module, username, status, message, error=None):
-    now = get_shanghai_now().strftime('%Y%m%d_%H%M%S')
-    log_dir = os.path.join(module)
-    os.makedirs(log_dir, exist_ok=True)
-    if status == 'success':
-        log_file = os.path.join(log_dir, f"{now}_success.log")
-    else:
-        log_file = os.path.join(log_dir, f"{now}_error.log")
-    try:
-        with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(f"账号: {username}\n时间: {now}\n状态: {status}\n结果: {message}\n")
-            if error:
-                f.write(f"错误原因: {error}\n")
-            f.write("-"*30+"\n")
-    except Exception as e:
-        print(f"❌ 保存任务日志时发生错误: {e}")
-
-# 操作日志保存函数
-
-def save_op_log(module, username, op_type, task_id, status, message, error=None):
-    now = get_shanghai_now().strftime('%Y%m%d_%H%M%S')
-    log_dir = os.path.join(module)
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"{now}_op.log")
-    try:
-        with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(f"操作: {op_type}\n账号: {username}\n任务ID: {task_id}\n时间: {now}\n状态: {status}\n结果: {message}\n")
-            if error:
-                f.write(f"错误原因: {error}\n")
-            f.write("-"*30+"\n")
-    except Exception as e:
-        print(f"❌ 保存操作日志时发生错误: {e}")
-
-# 定时任务执行器（新逻辑）
-class TaskScheduler:
-    def __init__(self, application, loop):
-        self.application = application
-        self.loop = loop
-        self.running = False
-        self.thread = None
-
-    def start(self):
-        if self.running:
-            return
-        self.running = True
-        self.thread = threading.Thread(target=self._scheduler_loop, daemon=True)
-        self.thread.start()
-        print("✅ 定时任务调度器已启动")
-
-    def stop(self):
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=5)
-        print("⏹️ 定时任务调度器已停止")
-
-    def _scheduler_loop(self):
-        while self.running:
-            try:
-                now = get_shanghai_now()
-                tasks = load_scheduled_tasks()
-                for task in tasks.values():
-                    if not task.get("enabled", True):
-                        continue
-                    cron_expr = f"{task['minute']} {task['hour']} * * *"
-                    cron = croniter(cron_expr, now)
-                    next_time = cron.get_next(datetime)
-                    if next_time <= now:
-                        self._execute_task(task)
-                time.sleep(60)
-            except Exception as e:
-                print(f"❌ 定时任务调度器错误: {e}")
-                time.sleep(60)
-
-    def _execute_task(self, task):
-        try:
-            print(f"🔄 执行定时任务: {task['module']} {task['hour']:02d}:{task['minute']:02d} (用户: {task['user_id']}, 账号: {task['username']})")
-            user_id = int(task['user_id'])
-            if is_banned(user_id):
-                print(f"❌ 用户 {user_id} 已被封禁")
-                return
-            can_use, usage = check_daily_limit(user_id)
-            if not can_use:
-                print(f"❌ 用户 {user_id} 已达到每日使用限制")
-                return
-            module = task['module']
-            # 执行签到任务的代码
-        except Exception as e:
-            print(f"❌ 执行定时任务时发生错误: {e}")
-
-# 继续执行后续代码
-#!/usr/bin/env python3
-
-import requests
-import pyotp
-import time
-import sys
-import os
-
-
-class Color:
-    GREEN = '\033[92m'
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    END = '\033[0m'
-
-def send_telegram_message(token: str, chat_id: str, text: str):
-    if not token or not chat_id:
-        print(f"{Color.YELLOW}⚠️ Telegram配置未填写，跳过通知{Color.END}")
-        return
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    max_retries = 3
-    for retry in range(max_retries):
-        try:
-            resp = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=20)
-            if resp.status_code == 200:
-                print(f"{Color.GREEN}✅ Telegram通知发送成功{Color.END}")
-                return
-            else:
-                print(f"{Color.RED}❌ Telegram通知发送失败（第 {retry + 1} 次尝试）: {resp.text}{Color.END}")
-        except requests.RequestException as e:
-            print(f"{Color.RED}❌ 发送Telegram通知异常（第 {retry + 1} 次尝试）: {e}{Color.END}")
-        if retry < max_retries - 1:
-            time.sleep(5)
-    print(f"{Color.RED}❌ 发送Telegram通知失败，已达到最大重试次数{Color.END}")
-
-class ACCKAccount:
-    def __init__(self, email, password, totp_secret=None):
-        self.email = email
-        self.password = password
-        self.totp_secret = totp_secret
-        self.session = requests.Session()
-        self.token = None
-        self._init_headers()
-
-    def _init_headers(self):
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-            "Referer": "https://acck.io",
-            "Origin": "https://acck.io",
-            "Content-Type": "application/json;charset=UTF-8"
-        })
-
-    def login(self):
-        payload = {
-            "email": self.email,
-            "password": self.password,
-            "token": "",
-            "verifyCode": ""
-        }
-        print(f"{Color.CYAN}ℹ️ 登录账户: {self.email}{Color.END}")
-        max_retries = 3
-        for retry in range(max_retries):
-            try:
-                resp = self.session.post("https://api.acck.io/api/v1/user/login", json=payload, timeout=20)
-                resp.raise_for_status()
-                data = resp.json()
-
-                if data.get("status_code") == 0 and "二步验证" in data.get("status_msg", ""):
-                    if not self.totp_secret:
-                        raise Exception("需要TOTP但未配置密钥")
-                    totp = pyotp.TOTP(self.totp_secret)
-                    payload["token"] = totp.now()
-                    print(f"{Color.YELLOW}⚠️ 使用TOTP验证码登录中...{Color.END}")
-                    resp = self.session.post("https://api.acck.io/api/v1/user/login", json=payload, timeout=20)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    if data.get("status_code") != 0:
-                        raise Exception("TOTP验证失败: " + data.get("status_msg", "未知错误"))
-
-                if data.get("status_code") != 0:
-                    raise Exception("登录失败: " + data.get("status_msg", "未知错误"))
-
-                self.token = data["data"]["token"]
-                print(f"{Color.GREEN}✅ 登录成功，Token: {self.token[:10]}...{Color.END}")
-                return
-            except requests.RequestException as e:
-                print(f"{Color.RED}❌ 登录请求异常（第 {retry + 1} 次尝试）: {e}{Color.END}")
-            except (KeyError, ValueError) as e:
-                print(f"{Color.RED}❌ 登录数据解析错误（第 {retry + 1} 次尝试）: {e}{Color.END}")
-            if retry < max_retries - 1:
-                time.sleep(5)
-        print(f"{Color.RED}❌ 登录失败，已达到最大重试次数{Color.END}")
-
-    def checkin(self):
-        if not self.token:
-            raise Exception("未登录，无法签到")
-
-        headers = {"Authorization": self.token}
-        max_retries = 3
-        for retry in range(max_retries):
-            try:
-                resp = self.session.get("https://sign-service.acck.io/api/acLogs/sign", headers=headers, timeout=20)
-                resp.raise_for_status()
-                try:
-                    data = resp.json()
-                except ValueError:
-                    msg = f"签到接口返回非JSON，原始内容：{resp.text}"
-                    print(f"{Color.RED}{msg}{Color.END}")
-                    return False, msg
-
-                if data.get("code") == 200:
-                    msg = f"签到成功: {data.get('msg', '')}"
-                    print(f"{Color.GREEN}✅ {msg}{Color.END}")
-                    return True, msg
-                elif data.get("msg") == "今日已签到":
-                    msg = "今日已签到"
-                    print(f"{Color.GREEN}ℹ️ 签到状态：{msg}{Color.END}")
-                    return True, msg
-                else:
-                    msg = f"签到失败: {data}"
-                    print(f"{Color.RED}❌ {msg}{Color.END}")
-                    return False, msg
-            except requests.RequestException as e:
-                print(f"{Color.RED}❌ 签到请求异常（第 {retry + 1} 次尝试）: {e}{Color.END}")
-            if retry < max_retries - 1:
-                time.sleep(5)
-        print(f"{Color.RED}❌ 签到失败，已达到最大重试次数{Color.END}")
-        return False, "签到失败，已达到最大重试次数"
-
-    def get_balance(self):
-        if not self.token:
-            return None
-
-        headers = {"Authorization": self.token}
-        max_retries = 3
-        for retry in range(max_retries):
-            try:
-                resp = self.session.get("https://api.acck.io/api/v1/user/index", headers=headers, timeout=20)
-                resp.raise_for_status()
-                data = resp.json()
-                if data.get("status_code") != 0:
-                    msg = f"获取余额失败: {data.get('status_msg', '未知错误')}"
-                    print(f"{Color.RED}❌ {msg}{Color.END}")
-                    return None
-
-                info = data.get("data", {})
-                money = info.get("money", 0)
-                try:
-                    money = float(money) / 100
-                except (TypeError, ValueError):
-                    money = 0.0
-
-                ak_coin = info.get("ak_coin", "N/A")
-                balance_info = f"AK币: {ak_coin}，现金: ¥{money:.2f}"
-                print(f"{Color.BLUE}💰 余额信息 - {balance_info}{Color.END}")
-                return balance_info
-            except requests.RequestException as e:
-                print(f"{Color.RED}❌ 获取余额请求异常（第 {retry + 1} 次尝试）: {e}{Color.END}")
-            if retry < max_retries - 1:
-                time.sleep(5)
-        print(f"{Color.RED}❌ 获取余额失败，已达到最大重试次数{Color.END}")
-        return None
-
-def parse_accounts(env_var: str):
-    accounts = []
-    if not env_var:
-        print(f"{Color.RED}❌ 环境变量 ACCK_ACCOUNTS 未设置或为空{Color.END}")
-        return accounts
-
-    for idx, acc_str in enumerate(env_var.split("|"), 1):
-        parts = acc_str.strip().split(":")
-        if len(parts) < 2:
-            print(f"{Color.YELLOW}⚠️ 跳过无效账户配置: {acc_str}{Color.END}")
-            continue
-        email = parts[0]
-        password = parts[1]
-        totp_secret = parts[2] if len(parts) > 2 else None
-        accounts.append({"email": email, "password": password, "totp_secret": totp_secret})
-    return accounts
-
-def main(email, password, totp=None):
-    try:
-        acc = ACCKAccount(email, password, totp)
-        acc.login()
-        ok, msg = acc.checkin()
-        balance = acc.get_balance()
-        result = f"签到结果: {'成功' if ok else '失败'}\n信息: {msg}"
-        if balance:
-            result += f"\n{balance}"
-        return result
-    except Exception as e:
-        return f"执行出错: {e}"
-
-# 如需测试请在bot.py中调用main，不建议直接运行本文件
-
-# 继续执行后续代码
-#!/usr/bin/env python3
-
-import os
-import time
-import pyotp
-from curl_cffi import requests
-from dotenv import load_dotenv
-from typing import Dict, List, Optional, Tuple
-
-# 初始化环境变量
-load_dotenv()
-
-class Color:
-    """控制台颜色"""
-    GREEN = '\033[92m'
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    END = '\033[0m'
-
-class AkileSession:
-    """独立会话环境"""
-    def __init__(self):
-        self.session = requests.Session(
-            impersonate="chrome110",
-            allow_redirects=False
-        )
-        self._init_headers()
-        self.session.cookies.clear()
-        
-    def _init_headers(self):
-        self.session.headers = {
-            "Host": "api.akile.io",
-            "Accept": "application/json, text/plain, */*",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-            "Referer": "https://akile.io/",
-            "Origin": "https://akile.io",
-            "Content-Type": "application/json;charset=UTF-8"
-        }
-
-class AkileAccount:
-    def __init__(self, email: str, password: str, totp_secret: str = None):
-        self.email = email
-        self.password = password
-        self.totp_secret = totp_secret
-        self.session = AkileSession().session
-        
-    def login(self) -> Tuple[Optional[str], Optional[str]]:
-        """登录流程"""
-        max_retries = 3
-        for retry in range(max_retries):
-            try:
-                payload = {
-                    "email": self.email,
-                    "password": self.password,
-                    "token": "",
-                    "verifyCode": ""
-                }
-                
-                print(f"{Color.CYAN} 登录账号: {self.email}{Color.END}")
-                response = self.session.post(
-                    "https://api.akile.io/api/v1/user/login",
-                    json=payload,
-                    timeout=20
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                # TOTP验证
-                if data.get("status_code") == 0 and "二步验证" in data.get("status_msg", ""):
-                    if not self.totp_secret:
-                        return None, "需要TOTP但未配置密钥"
-                    
-                    totp = pyotp.TOTP(self.totp_secret)
-                    payload["token"] = totp.now()
-                    print(f"{Color.YELLOW} 生成TOTP验证码{Color.END}")
-                    
-                    verify_response = self.session.post(
-                        "https://api.akile.io/api/v1/user/login",
-                        json=payload,
-                        timeout=20
-                    )
-                    verify_response.raise_for_status()
-                    verify_data = verify_response.json()
-                    
-                    if verify_data.get("status_code") == 0:
-                        return verify_data.get("data", {}).get("token"), None
-                    return None, verify_data.get("status_msg", "TOTP验证失败")
-                
-                if data.get("status_code") == 0:
-                    return data.get("data", {}).get("token"), None
-                    
-                return None, data.get("status_msg", "登录失败")
-            except requests.RequestException as e:
-                print(f"{Color.RED}❌ 登录请求异常（第 {retry + 1} 次尝试）: {e}{Color.END}")
-            except (KeyError, ValueError) as e:
-                print(f"{Color.RED}❌ 登录数据解析错误（第 {retry + 1} 次尝试）: {e}{Color.END}")
-            if retry < max_retries - 1:
-                time.sleep(5)
-        return None, "登录失败，已达到最大重试次数"
-
-    def get_real_balance(self, token: str) -> Dict:
-        """获取真实余额信息（自动转换单位为元）"""
-        max_retries = 3
-        for retry in range(max_retries):
-            try:
-                headers = {"Authorization": token}
-                response = self.session.get(
-                    "https://api.akile.io/api/v1/user/index",
-                    headers=headers,
-                    timeout=20
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                if data.get("status_code") != 0:
-                    return {"error": "获取余额失败: " + data.get("status_msg", "未知错误")}
-                    
-                balance_data = data.get("data", {})
-                
-                # 转换现金单位为元（除以100）
-                money = balance_data.get("money", 0)
-                try:
-                    money_yuan = float(money) / 100
-                except (TypeError, ValueError):
-                    money_yuan = 0.0
-                    
-                return {
-                    "ak_coin": balance_data.get("ak_coin", "N/A"),
-                    "money": f"{money_yuan:.2f}",  # 保留两位小数
-                    "raw_data": balance_data
-                }
-            except requests.RequestException as e:
-                print(f"{Color.RED}❌ 获取余额请求异常（第 {retry + 1} 次尝试）: {e}{Color.END}")
-            except (KeyError, ValueError) as e:
-                print(f"{Color.RED}❌ 获取余额数据解析错误（第 {retry + 1} 次尝试）: {e}{Color.END}")
-            if retry < max_retries - 1:
-                time.sleep(5)
-        return {"error": "获取余额失败，已达到最大重试次数"}
-
-    def checkin(self, token: str) -> Tuple[bool, str]:
-        """执行签到"""
-        max_retries = 3
-        for retry in range(max_retries):
-            try:
-                headers = {"Authorization": token}
-                response = self.session.get(
-                    "https://api.akile.io/api/v1/user/Checkin",
-                    headers=headers,
-                    timeout=20
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                if data.get("status_code") == 0 or "已签到" in data.get("status_msg", ""):
-                    return True, data.get("status_msg", "签到成功")
-                return False, data.get("status_msg", "签到失败")
-            except requests.RequestException as e:
-                print(f"{Color.RED}❌ 签到请求异常（第 {retry + 1} 次尝试）: {e}{Color.END}")
-            except (KeyError, ValueError) as e:
-                print(f"{Color.RED}❌ 签到数据解析错误（第 {retry + 1} 次尝试）: {e}{Color.END}")
-            if retry < max_retries - 1:
-                time.sleep(5)
-        return False, "签到失败，已达到最大重试次数"
-
-class AccountManager:
-    def __init__(self):
-        self.accounts = self._load_accounts()
-        
-    def _parse_accounts(self, config_str: str) -> List[Dict]:
-        """解析多账户配置字符串"""
-        accounts = []
-        # 用 | 分隔不同账户
-        account_strings = config_str.split("|")
-        
-        for i, acc_str in enumerate(account_strings, 1):
-            if not acc_str.strip():
-                continue
-                
-            # 用 : 分隔账户信息
-            parts = acc_str.split(":")
-            if len(parts) < 2:
-                print(f"{Color.YELLOW} 忽略无效账号配置: {acc_str}{Color.END}")
-                continue
-                
-            email = parts[0].strip()
-            password = parts[1].strip()
-            totp_secret = parts[2].strip() if len(parts) > 2 else None
-            
-            accounts.append({
-                "name": f"账号{i}",
-                "email": email,
-                "password": password,
-                "totp_secret": totp_secret
-            })
-            
-        return accounts
-        
-    def _load_accounts(self) -> Dict[str, Dict]:
-        """从环境变量加载所有账户"""
-        # 从 AKILE_ACCOUNTS 环境变量读取配置
-        config_str = os.getenv("AKILE_ACCOUNTS", "")
-        if not config_str:
-            print(f"{Color.RED} 未配置AKILE_ACCOUNTS环境变量{Color.END}")
-            return {}
-            
-        return {acc["name"]: acc for acc in self._parse_accounts(config_str)}
-    
-    def run(self):
-        if not self.accounts:
-            print(f"{Color.RED} 未找到有效账号配置{Color.END}")
-            return
-
-        print(f"{Color.YELLOW} 发现 {len(self.accounts)} 个账号{Color.END}")
-
-        for name, acc in self.accounts.items():
-            print(f"\n{Color.CYAN} ➤ 处理 {name}{Color.END}")
-            
-            account = AkileAccount(
-                email=acc["email"],
-                password=acc["password"],
-                totp_secret=acc.get("totp_secret")
-            )
-            
-            # 登录
-            token, error = account.login()
-            if error:
-                print(f"{Color.RED} 登录失败: {error}{Color.END}")
-                continue
-                
-            print(f"{Color.GREEN} 登录成功{Color.END}")
-            
-            # 签到
-            success, msg = account.checkin(token)
-            if success:
-                print(f"{Color.GREEN} {msg}{Color.END}")
-            else:
-                print(f"{Color.RED} 签到失败: {msg}{Color.END}")
-            
-            # 获取并显示真实余额
-            balance = account.get_real_balance(token)
-            if "error" in balance:
-                print(f"{Color.RED} {balance['error']}{Color.END}")
-                print(f"{Color.YELLOW} 原始响应: {balance.get('raw_data', '无')}{Color.END}")
-            else:
-                print(f"{Color.BLUE} 💰 真实账号余额:")
-                print(f"   AK币: {balance['ak_coin']}")
-                print(f"   现金: ￥{balance['money']}")
-            
-            time.sleep(1)
-
-def main(email, password, totp_secret=None):
-    try:
-        acc = AkileAccount(email, password, totp_secret)
-        token, err = acc.login()
-        if not token:
-            return f"登录失败: {err}"
-        ok, msg = acc.checkin(token)
-        balance = acc.get_real_balance(token)
-        result = f"签到结果: {'成功' if ok else '失败'}\n信息: {msg}"
-        # 格式化余额信息
-        if isinstance(balance, dict) and "ak_coin" in balance and "money" in balance:
-            result += f"\nAK币: {balance['ak_coin']}，现金: ¥{balance['money']}"
-        elif isinstance(balance, dict) and "error" in balance:
-            result += f"\n{balance['error']}"
-        return result
-    except Exception as e:
-        return f"执行出错: {e}"
-
-# 如需测试请在bot.py中调用main，不建议直接运行本文件
+# 主菜单循环
+while true; do
+    show_menu
+    read -p "请选择操作 [0-8]: " choice
+    case $choice in
+        1) start_bot ;;
+        2) stop_bot ;;
+        3) check_status ;;
+        4) show_log ;;
+        5) check_env ;;
+        6) fix_env ;;
+        7) update_script ;;
+        8) uninstall_all ;;
+        0) echo "[INFO] 退出菜单，bot.py继续后台运行"; exit 0 ;;
+        ##|**)
+        9|10) ;; # 占位，防止误触
+        *) echo "[ERROR] 无效选择，请重试" ;;
+    esac
+    echo ""
+done
