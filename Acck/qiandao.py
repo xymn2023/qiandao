@@ -5,6 +5,7 @@ import pyotp
 import time
 import sys
 import os
+import json
 
 
 class Color:
@@ -16,16 +17,33 @@ class Color:
     END = '\033[0m'
 
 def send_telegram_message(token: str, chat_id: str, text: str):
+    """
+    发送Telegram通知消息
+    
+    Args:
+        token: Telegram Bot Token
+        chat_id: 聊天ID
+        text: 消息内容
+    """
     if not token or not chat_id:
         print(f"{Color.YELLOW}⚠️ Telegram配置未填写，跳过通知{Color.END}")
         return
+    
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        resp = requests.post(url, json={"chat_id": chat_id, "text": text})
+        resp = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
         if resp.status_code == 200:
-            print(f"{Color.GREEN}✅ Telegram通知发送成功{Color.END}")
+            result = resp.json()
+            if result.get('ok'):
+                print(f"{Color.GREEN}✅ Telegram通知发送成功{Color.END}")
+            else:
+                print(f"{Color.RED}❌ Telegram通知发送失败: {result.get('description', '未知错误')}{Color.END}")
         else:
-            print(f"{Color.RED}❌ Telegram通知发送失败: {resp.text}{Color.END}")
+            print(f"{Color.RED}❌ Telegram通知发送失败: HTTP {resp.status_code}{Color.END}")
+    except requests.exceptions.Timeout:
+        print(f"{Color.RED}❌ Telegram通知发送超时{Color.END}")
+    except requests.exceptions.RequestException as e:
+        print(f"{Color.RED}❌ Telegram通知网络错误: {e}{Color.END}")
     except Exception as e:
         print(f"{Color.RED}❌ 发送Telegram通知异常: {e}{Color.END}")
 
@@ -48,6 +66,12 @@ class ACCKAccount:
         })
 
     def login(self):
+        """
+        登录Acck账户
+        
+        Raises:
+            Exception: 登录失败时抛出异常
+        """
         payload = {
             "email": self.email,
             "password": self.password,
@@ -55,25 +79,51 @@ class ACCKAccount:
             "verifyCode": ""
         }
         print(f"{Color.CYAN}ℹ️ 登录账户: {self.email}{Color.END}")
-        resp = self.session.post("https://api.acck.io/api/v1/user/login", json=payload, timeout=20)
-        data = resp.json()
+        
+        try:
+            resp = self.session.post("https://api.acck.io/api/v1/user/login", json=payload, timeout=20)
+            resp.raise_for_status()  # 检查HTTP状态码
+            data = resp.json()
+        except requests.exceptions.Timeout:
+            raise Exception("登录请求超时")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"网络请求失败: {e}")
+        except json.JSONDecodeError:
+            raise Exception("服务器返回非JSON格式数据")
 
+        # 处理二步验证
         if data.get("status_code") == 0 and "二步验证" in data.get("status_msg", ""):
             if not self.totp_secret:
                 raise Exception("需要TOTP但未配置密钥")
-            totp = pyotp.TOTP(self.totp_secret)
-            payload["token"] = totp.now()
-            print(f"{Color.YELLOW}⚠️ 使用TOTP验证码登录中...{Color.END}")
-            resp = self.session.post("https://api.acck.io/api/v1/user/login", json=payload, timeout=20)
-            data = resp.json()
-            if data.get("status_code") != 0:
-                raise Exception("TOTP验证失败: " + data.get("status_msg", "未知错误"))
+            
+            try:
+                totp = pyotp.TOTP(self.totp_secret)
+                payload["token"] = totp.now()
+                print(f"{Color.YELLOW}⚠️ 使用TOTP验证码登录中...{Color.END}")
+                
+                resp = self.session.post("https://api.acck.io/api/v1/user/login", json=payload, timeout=20)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                if data.get("status_code") != 0:
+                    raise Exception("TOTP验证失败: " + data.get("status_msg", "未知错误"))
+            except Exception as e:
+                if "TOTP" in str(e):
+                    raise
+                raise Exception(f"TOTP验证过程出错: {e}")
 
+        # 检查登录结果
         if data.get("status_code") != 0:
             raise Exception("登录失败: " + data.get("status_msg", "未知错误"))
 
-        self.token = data["data"]["token"]
-        print(f"{Color.GREEN}✅ 登录成功，Token: {self.token[:10]}...{Color.END}")
+        # 提取token
+        try:
+            self.token = data["data"]["token"]
+            if not self.token:
+                raise Exception("登录成功但未获取到Token")
+            print(f"{Color.GREEN}✅ 登录成功，Token: {self.token[:10]}...{Color.END}")
+        except (KeyError, TypeError):
+            raise Exception("登录响应数据格式错误")
 
     def checkin(self):
         if not self.token:
