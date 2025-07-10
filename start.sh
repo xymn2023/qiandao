@@ -197,6 +197,37 @@ if [ ! -d "$INSTALL_PATH" ]; then
         exit 1
     fi
     echo "✅ 依赖安装完成"
+    
+    # 立即注册永久全局命令
+    echo "🔗 正在注册永久全局命令..."
+    if [ "$IS_ROOT" = "1" ]; then
+        ln -sf "$INSTALL_PATH/start.sh" "$SHORTCUT"
+        chmod +x "$SHORTCUT"
+        echo "✅ 全局命令已注册：qiandao-bot"
+        # 验证命令是否可用
+        if command -v qiandao-bot >/dev/null 2>&1; then
+            echo "✅ 命令验证成功：qiandao-bot 已可用"
+        else
+            echo "⚠️ 命令验证失败，请手动检查：ls -la /usr/local/bin/qiandao-bot"
+        fi
+    else
+        # 检查是否已存在alias，避免重复添加
+        if ! grep -q "alias qiandao-bot=" ~/.bashrc; then
+            echo "$ALIAS_CMD" >> ~/.bashrc
+            echo "✅ alias 已添加到 ~/.bashrc"
+            echo "🔄 正在重新加载 ~/.bashrc..."
+            source ~/.bashrc
+            if command -v qiandao-bot >/dev/null 2>&1; then
+                echo "✅ 命令验证成功：qiandao-bot 已可用"
+            else
+                echo "⚠️ 请手动执行：source ~/.bashrc 后使用 qiandao-bot"
+            fi
+        else
+            echo "✅ alias 已存在，正在重新加载..."
+            source ~/.bashrc
+        fi
+    fi
+    
     read -p "请输入你的 Telegram Bot Token: " TOKEN < /dev/tty
     read -p "请输入你的 Telegram Chat ID (管理员ID): " CHAT_ID < /dev/tty
     cat > .env <<EOF
@@ -204,17 +235,9 @@ TELEGRAM_BOT_TOKEN=$TOKEN
 TELEGRAM_CHAT_ID=$CHAT_ID
 EOF
     chmod +x start.sh
-    if [ "$IS_ROOT" = "1" ]; then
-        ln -sf "$INSTALL_PATH/start.sh" "$SHORTCUT"
-        chmod +x "$SHORTCUT"
-        echo "✅ 全局命令已注册：qiandao-bot"
-    else
-        if ! grep -q "alias qiandao-bot=" ~/.bashrc; then
-            echo "$ALIAS_CMD" >> ~/.bashrc
-            echo "alias 已添加到 ~/.bashrc，请运行 source ~/.bashrc 后使用 qiandao-bot"
-        fi
-    fi
+    
     echo "✅ 安装完成！"
+    echo "🎉 现在你可以在任意目录使用 'qiandao-bot' 命令启动机器人！"
     exec bash "$INSTALL_PATH/start.sh"
     exit 0
 fi
@@ -357,23 +380,52 @@ fix_env() {
     "$PYTHON_IN_VENV" -m pip install -r requirements.txt
     "$PYTHON_IN_VENV" -m pip install "python-telegram-bot[job-queue]"
     echo "[SUCCESS] 依赖修复完成"
+    
     # 检查并修复全局命令注册
     echo "[INFO] 检查qiandao-bot全局命令注册..."
     if [ "$IS_ROOT" = "1" ]; then
-        if [ ! -L /usr/local/bin/qiandao-bot ] || [ "$(readlink -f /usr/local/bin/qiandao-bot)" != "$SCRIPT_DIR/start.sh" ]; then
+        # 检查软链接是否存在且正确
+        if [ ! -L /usr/local/bin/qiandao-bot ] || [ "$(readlink -f /usr/local/bin/qiandao-bot 2>/dev/null)" != "$(readlink -f "$SCRIPT_DIR/start.sh")" ]; then
+            echo "[INFO] 软链接不存在或错误，正在修复..."
+            rm -f /usr/local/bin/qiandao-bot
             ln -sf "$SCRIPT_DIR/start.sh" /usr/local/bin/qiandao-bot
             chmod +x /usr/local/bin/qiandao-bot
             echo "[SUCCESS] 已修复全局命令(软链)：qiandao-bot"
         else
-            echo "[INFO] 全局命令(软链)已存在"
+            echo "[INFO] 全局命令(软链)已存在且正确"
+        fi
+        # 验证命令是否可用
+        if command -v qiandao-bot >/dev/null 2>&1; then
+            echo "[SUCCESS] 命令验证成功：qiandao-bot 已可用"
+        else
+            echo "[WARNING] 命令验证失败，请检查PATH设置"
         fi
     else
+        # 检查alias是否存在且正确
         if ! grep -q "alias qiandao-bot=" ~/.bashrc; then
+            echo "[INFO] alias不存在，正在添加..."
             echo "$ALIAS_CMD" >> ~/.bashrc
-            echo "alias 已添加到 ~/.bashrc，请运行 source ~/.bashrc 后使用 qiandao-bot"
-            echo "[SUCCESS] 已修复全局命令(alias)：qiandao-bot"
+            echo "[SUCCESS] 已添加alias到 ~/.bashrc"
         else
-            echo "[INFO] 全局命令(alias)已存在"
+            # 检查alias是否正确
+            current_alias=$(grep "alias qiandao-bot=" ~/.bashrc | head -1)
+            if [ "$current_alias" != "$ALIAS_CMD" ]; then
+                echo "[INFO] alias不正确，正在修复..."
+                # 删除旧的alias
+                sed -i '/alias qiandao-bot=/d' ~/.bashrc
+                # 添加新的alias
+                echo "$ALIAS_CMD" >> ~/.bashrc
+                echo "[SUCCESS] 已修复alias"
+            else
+                echo "[INFO] alias已存在且正确"
+            fi
+        fi
+        # 重新加载bashrc
+        source ~/.bashrc
+        if command -v qiandao-bot >/dev/null 2>&1; then
+            echo "[SUCCESS] 命令验证成功：qiandao-bot 已可用"
+        else
+            echo "[WARNING] 请手动执行：source ~/.bashrc 后使用 qiandao-bot"
         fi
     fi
     wait_any_key
@@ -382,16 +434,24 @@ fix_env() {
 # 更新脚本（保留.env）
 update_script() {
     echo "[INFO] 正在从GitHub拉取最新代码..."
+    
+    # 先备份.env文件（如果存在）
+    if [ -f .env ]; then
+        echo "[INFO] 备份.env配置文件..."
+        cp .env /tmp/qiandao_env_backup
+    fi
+    
+    # 拉取最新代码
     git fetch origin main
     git reset --hard origin/main
-    if [ -f .env ]; then
-        echo "[INFO] 保留.env配置"
-        mv .env /tmp/qiandao_env_backup
-    fi
-    git pull origin main
+    
+    # 恢复.env文件（如果之前存在）
     if [ -f /tmp/qiandao_env_backup ]; then
+        echo "[INFO] 恢复.env配置文件..."
         mv /tmp/qiandao_env_backup .env
+        echo "[SUCCESS] .env配置已保留"
     fi
+    
     echo "[SUCCESS] 更新完成"
     wait_any_key
 }
