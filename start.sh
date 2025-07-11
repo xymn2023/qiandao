@@ -433,6 +433,23 @@ fix_env() {
 
 # 更新脚本（保留.env）
 update_script() {
+    echo "[INFO] 检查更新方式..."
+    
+    # 检查是否为Git仓库
+    if [ -d ".git" ]; then
+        echo "[INFO] 检测到Git仓库，使用Git方式更新..."
+        update_via_git
+    else
+        echo "[INFO] 检测到非Git仓库，使用下载方式更新..."
+        update_via_download
+    fi
+    
+    echo "[SUCCESS] 更新完成"
+    wait_any_key
+}
+
+# Git方式更新
+update_via_git() {
     echo "[INFO] 正在从GitHub拉取最新代码..."
     
     # 先备份.env文件（如果存在）
@@ -442,8 +459,17 @@ update_script() {
     fi
     
     # 拉取最新代码
-    git fetch origin main
-    git reset --hard origin/main
+    if git fetch origin main; then
+        if git reset --hard origin/main; then
+            echo "[SUCCESS] Git更新成功"
+        else
+            echo "[ERROR] Git重置失败"
+            exit 1
+        fi
+    else
+        echo "[ERROR] Git拉取失败"
+        exit 1
+    fi
     
     # 恢复.env文件（如果之前存在）
     if [ -f /tmp/qiandao_env_backup ]; then
@@ -451,9 +477,118 @@ update_script() {
         mv /tmp/qiandao_env_backup .env
         echo "[SUCCESS] .env配置已保留"
     fi
+}
+
+# 下载方式更新
+update_via_download() {
+    echo "[INFO] 正在从GitHub下载最新代码..."
     
-    echo "[SUCCESS] 更新完成"
-    wait_any_key
+    # 创建备份目录
+    BACKUP_DIR="/tmp/qiandao_backup_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+    echo "[INFO] 创建备份目录: $BACKUP_DIR"
+    
+    # 备份重要文件
+    echo "[INFO] 备份重要文件..."
+    
+    # 备份.env文件
+    if [ -f .env ]; then
+        cp .env "$BACKUP_DIR/"
+        echo "[SUCCESS] 已备份 .env"
+    fi
+    
+    # 备份用户数据目录
+    for dir in "Acck_users" "Akile_users"; do
+        if [ -d "$dir" ]; then
+            cp -r "$dir" "$BACKUP_DIR/"
+            echo "[SUCCESS] 已备份 $dir"
+        fi
+    done
+    
+    # 备份日志目录
+    for dir in "Acck_logs" "Akile_logs"; do
+        if [ -d "$dir" ]; then
+            cp -r "$dir" "$BACKUP_DIR/"
+            echo "[SUCCESS] 已备份 $dir"
+        fi
+    done
+    
+    # 备份其他重要文件
+    for file in "scheduled_tasks.json" "allowed_users.json" "banned_users.json" "daily_usage.json" "usage_stats.json"; do
+        if [ -f "$file" ]; then
+            cp "$file" "$BACKUP_DIR/"
+            echo "[SUCCESS] 已备份 $file"
+        fi
+    done
+    
+    # 下载最新代码
+    echo "[INFO] 下载最新代码..."
+    cd ..
+    CURRENT_DIR_NAME=$(basename "$SCRIPT_DIR")
+    
+    # 重命名当前目录
+    mv "$CURRENT_DIR_NAME" "${CURRENT_DIR_NAME}_old"
+    
+    # 克隆最新代码
+    if git clone "$REPO_URL" "$CURRENT_DIR_NAME"; then
+        echo "[SUCCESS] 代码下载成功"
+        
+        # 进入新目录
+        cd "$CURRENT_DIR_NAME"
+        
+        # 恢复备份的文件
+        echo "[INFO] 恢复备份文件..."
+        
+        # 恢复.env文件
+        if [ -f "$BACKUP_DIR/.env" ]; then
+            cp "$BACKUP_DIR/.env" .
+            echo "[SUCCESS] 已恢复 .env"
+        fi
+        
+        # 恢复用户数据目录
+        for dir in "Acck_users" "Akile_users"; do
+            if [ -d "$BACKUP_DIR/$dir" ]; then
+                cp -r "$BACKUP_DIR/$dir" .
+                echo "[SUCCESS] 已恢复 $dir"
+            fi
+        done
+        
+        # 恢复日志目录
+        for dir in "Acck_logs" "Akile_logs"; do
+            if [ -d "$BACKUP_DIR/$dir" ]; then
+                cp -r "$BACKUP_DIR/$dir" .
+                echo "[SUCCESS] 已恢复 $dir"
+            fi
+        done
+        
+        # 恢复其他重要文件
+        for file in "scheduled_tasks.json" "allowed_users.json" "banned_users.json" "daily_usage.json" "usage_stats.json"; do
+            if [ -f "$BACKUP_DIR/$file" ]; then
+                cp "$BACKUP_DIR/$file" .
+                echo "[SUCCESS] 已恢复 $file"
+            fi
+        done
+        
+        # 删除旧目录
+        echo "[INFO] 清理旧文件..."
+        rm -rf "../${CURRENT_DIR_NAME}_old"
+        
+        # 清理备份目录
+        rm -rf "$BACKUP_DIR"
+        
+        echo "[SUCCESS] 更新完成！"
+        
+    else
+        echo "[ERROR] 代码下载失败"
+        
+        # 恢复原目录
+        cd ..
+        mv "${CURRENT_DIR_NAME}_old" "$CURRENT_DIR_NAME"
+        cd "$CURRENT_DIR_NAME"
+        
+        echo "[INFO] 已恢复到原始状态"
+        exit 1
+    fi
 }
 
 # 卸载（删除所有文件）
