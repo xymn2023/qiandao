@@ -29,6 +29,7 @@ import threading
 import time
 from croniter import croniter
 import logging
+import httpx
 
 # ========== 时区设置 ==========
 # 设置时区为 Asia/Shanghai
@@ -48,6 +49,21 @@ def get_shanghai_time():
 def get_shanghai_now():
     """获取上海时区的当前时间（不带时区信息，兼容原有代码）"""
     return get_shanghai_time().replace(tzinfo=None)
+
+# ========== 网络连接配置 ==========
+# 设置更长的超时时间和重试机制
+TELEGRAM_TIMEOUT = 30  # 30秒超时
+TELEGRAM_RETRY_COUNT = 3  # 重试3次
+TELEGRAM_RETRY_DELAY = 2  # 重试间隔2秒
+
+# 创建带重试的 httpx 客户端
+def create_telegram_client():
+    """创建用于Telegram API的httpx客户端"""
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(TELEGRAM_TIMEOUT),
+        limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        http2=True
+    )
 
 # ==============================
 
@@ -335,9 +351,47 @@ def save_op_log(module, username, op_type, task_id, status, message, error=None)
     except Exception as e:
         print(f"❌ 保存操作日志失败: {e}")
 
+def get_task_today_status(module, username):
+    """
+    获取任务今日状态
+    
+    Args:
+        module: 模块名称
+        username: 用户名
+        
+    Returns:
+        str: 状态 ('success', 'error', 'none')
+    """
+    today = get_shanghai_now().strftime('%Y%m%d')
+    log_dir = get_log_dir(module)
+    
+    # 检查成功日志
+    success_logs = glob.glob(os.path.join(log_dir, f"{today}_*_success.log"))
+    for log_file in success_logs:
+        try:
+            with open(log_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                if username in content:
+                    return 'success'
+        except Exception:
+            pass
+    
+    # 检查错误日志
+    error_logs = glob.glob(os.path.join(log_dir, f"{today}_*_error.log"))
+    for log_file in error_logs:
+        try:
+            with open(log_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                if username in content:
+                    return 'error'
+        except Exception:
+            pass
+    
+    return 'none'
+
 def get_failed_tasks(user_id):
     """
-    获取用户失败的任务列表
+    获取用户失败的任务列表（智能版本）
     
     Args:
         user_id: 用户ID
@@ -358,6 +412,23 @@ def get_failed_tasks(user_id):
         # 检查今天是否有错误日志
         log_dir = get_log_dir(module)
         error_logs = glob.glob(os.path.join(log_dir, f"{today}_*_error.log"))
+        success_logs = glob.glob(os.path.join(log_dir, f"{today}_*_success.log"))
+        
+        # 先检查是否有成功日志（如果成功了就不算失败）
+        has_success = False
+        for log_file in success_logs:
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    if username in content:
+                        has_success = True
+                        break
+            except Exception as e:
+                print(f"❌ 读取成功日志失败: {e}")
+        
+        # 如果有成功日志，跳过这个任务
+        if has_success:
+            continue
         
         # 检查错误日志中是否包含该用户名的记录
         for log_file in error_logs:
@@ -365,14 +436,35 @@ def get_failed_tasks(user_id):
                 with open(log_file, 'r', encoding='utf-8') as f:
                     content = f.read()
                     if username in content:
-                        failed_tasks.append({
-                            'task_id': task_id,
-                            'module': module,
-                            'username': username,
-                            'hour': task['hour'],
-                            'minute': task['minute'],
-                            'error_log': log_file
-                        })
+                        # 检查是否是凭证不存在的错误
+                        if "凭证不存在" in content:
+                            # 检查用户文件是否真的不存在
+                            user_file = get_user_file(module, username)
+                            if not os.path.exists(user_file):
+                                # 确实不存在，添加到失败列表
+                                failed_tasks.append({
+                                    'task_id': task_id,
+                                    'module': module,
+                                    'username': username,
+                                    'hour': task['hour'],
+                                    'minute': task['minute'],
+                                    'error_log': log_file,
+                                    'error_type': 'credential_missing'
+                                })
+                            else:
+                                # 文件存在但日志显示不存在，可能是旧日志，跳过
+                                print(f"⚠️ 跳过旧日志：{username} 的凭证文件已存在")
+                        else:
+                            # 其他类型的错误，正常添加
+                            failed_tasks.append({
+                                'task_id': task_id,
+                                'module': module,
+                                'username': username,
+                                'hour': task['hour'],
+                                'minute': task['minute'],
+                                'error_log': log_file,
+                                'error_type': 'other'
+                            })
                         break  # 找到一个错误日志就够了
             except Exception as e:
                 print(f"❌ 读取错误日志失败: {e}")
@@ -607,33 +699,52 @@ class TaskScheduler:
     
     def _send_task_result(self, user_id, message):
         """
-        安全地发送任务结果消息
+        安全地发送任务结果消息，带重试机制
         
         Args:
             user_id: 用户ID
             message: 消息内容
         """
-        try:
-            # 优先使用异步方式发送消息
-            if self.loop and self.loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    self.application.bot.send_message(
-                        chat_id=user_id,
-                        text=message,
-                        parse_mode=ParseMode.HTML
-                    ),
+        success = False
+        
+        # 方法1：异步方式发送消息
+        if self.loop and self.loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._send_message_async(user_id, message),
                     self.loop
                 )
-            else:
-                # 备用同步方式
-                send_telegram_sync(TELEGRAM_BOT_TOKEN, user_id, message)
-        except Exception as e:
-            print(f"❌ 发送任务结果消息失败: {e}")
-            # 最后的备用方案
+                # 等待结果，设置超时
+                result = future.result(timeout=TELEGRAM_TIMEOUT)
+                if result:
+                    success = True
+                    return
+            except Exception as e:
+                print(f"异步发送消息失败: {e}")
+        
+        # 方法2：同步方式发送消息
+        if not success:
+            success = send_telegram_sync(TELEGRAM_BOT_TOKEN, user_id, message)
+        
+        if not success:
+            print(f"❌ 发送任务结果消息失败，用户ID: {user_id}")
+    
+    async def _send_message_async(self, user_id, message):
+        """异步发送消息，带重试机制"""
+        for attempt in range(TELEGRAM_RETRY_COUNT):
             try:
-                send_telegram_sync(TELEGRAM_BOT_TOKEN, user_id, message)
-            except Exception:
-                print(f"❌ 所有消息发送方式都失败了")
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text=message,
+                    parse_mode=ParseMode.HTML
+                )
+                return True
+            except Exception as e:
+                print(f"异步发送失败 (尝试 {attempt + 1}/{TELEGRAM_RETRY_COUNT}): {e}")
+                if attempt < TELEGRAM_RETRY_COUNT - 1:
+                    await asyncio.sleep(TELEGRAM_RETRY_DELAY)
+        
+        return False
 
 task_scheduler = None
 
@@ -755,12 +866,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • `/list` - 查看所有任务
 • `/me` - 查看个人信息
 • `/cancel` - 取消当前操作
+• `/clear` - 清屏（删除Bot消息）
+• `/clean_logs` - 清理过期日志
 
 💡 **使用说明：**
 1. 首次使用需要配置账号信息
 2. 支持TOTP二步验证
 3. 可设置定时自动签到
 4. 使用 /cancel 可随时退出操作
+5. 使用 /clear 可清理Bot消息
+6. 使用 /clean_logs 可清理过期日志文件
 
 ---
 🚀 开始您的签到之旅吧！"""
@@ -872,8 +987,28 @@ async def input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 只执行取消/退出当前操作，不撤回任何消息
-    await bot_reply_message(update, '操作已取消。')
+    user_id = update.effective_user.id
+    
+    # 获取当前用户状态
+    current_state = message_manager.get_user_state(user_id)
+    
+    # 根据状态智能删除相关消息
+    if current_state in ['manual_execute', 'inputting', 'confirming']:
+        # 删除当前流程的所有 Bot 消息
+        await delete_bot_messages_in_flow(update, context)
+        await update.message.reply_text('✅ 操作已取消，相关消息已清理。')
+    else:
+        # 普通取消，只删除当前消息
+        await update.message.reply_text('操作已取消。')
+    
+    # 重置用户状态
+    message_manager.set_user_state(user_id, 'idle')
+    
+    # 清理所有相关标记
+    context.user_data.pop('manual_execute_mode', None)
+    context.user_data.pop('current_flow_msg_ids', None)
+    context.user_data.pop('all_cmd_from_list', None)
+    
     return ConversationHandler.END
 
 # 管理员授权命令
@@ -1120,25 +1255,222 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_admin_action_daily(user_id, 'broadcast', context.args, f"广播内容见{log_file}")
 
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """导出所有数据到本地文件并发送详细信息到Bot"""
     user_id = update.effective_user.id
     is_ok, warn_msg = check_admin_and_warn(user_id, 'export')
     if not is_ok:
         await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
-    stats = load_usage_stats()
-    allowed = list(load_allowed_users())
-    banned = list(load_banned_users())
-    export = {
-        "stats": stats,
-        "allowed": allowed,
-        "banned": banned
-    }
-    now = get_shanghai_now()
-    export_file = f"export_{now.strftime(LOG_TIME_FMT)}.json"
-    with open(export_file, "w", encoding="utf-8") as f:
-        json.dump(export, f, ensure_ascii=False, indent=2)
-    await update.message.reply_text(f"数据已导出到 {export_file}。", reply_markup=ReplyKeyboardRemove())
-    log_admin_action_daily(user_id, 'export', [], f"导出到{export_file}")
+    
+    try:
+        # 开始导出提示
+        await update.message.reply_text("🔄 正在收集和导出数据，请稍候...", reply_markup=ReplyKeyboardRemove())
+        
+        # 收集所有数据
+        export_data = {}
+        
+        # 1. 基础统计数据
+        stats = load_usage_stats()
+        export_data["usage_stats"] = stats
+        
+        # 2. 用户权限数据
+        allowed_users = list(load_allowed_users())
+        banned_users = list(load_banned_users())
+        temp_users = load_temp_users()
+        user_limits = load_user_limits()
+        
+        export_data["user_permissions"] = {
+            "allowed_users": allowed_users,
+            "banned_users": banned_users,
+            "temp_users": temp_users,
+            "user_limits": user_limits
+        }
+        
+        # 3. 每日使用数据
+        daily_usage = load_daily_usage()
+        export_data["daily_usage"] = daily_usage
+        
+        # 4. 定时任务数据
+        scheduled_tasks = load_scheduled_tasks()
+        export_data["scheduled_tasks"] = scheduled_tasks
+        
+        # 5. 用户账号数据
+        user_accounts = {}
+        for module in ["Acck", "Akile"]:
+            users_dir = get_users_dir(module)
+            if os.path.exists(users_dir):
+                module_accounts = {}
+                for file in os.listdir(users_dir):
+                    if file.endswith('.json'):
+                        file_path = os.path.join(users_dir, file)
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                account_data = json.load(f)
+                                # 移除敏感信息
+                                if 'password' in account_data:
+                                    account_data['password'] = '***HIDDEN***'
+                                if 'totp' in account_data:
+                                    account_data['totp'] = '***HIDDEN***'
+                                module_accounts[file] = account_data
+                        except Exception as e:
+                            module_accounts[file] = {"error": f"读取失败: {e}"}
+                user_accounts[module] = module_accounts
+        export_data["user_accounts"] = user_accounts
+        
+        # 6. 日志文件列表
+        log_files = {}
+        for module in ["Acck", "Akile"]:
+            log_dir = get_log_dir(module)
+            if os.path.exists(log_dir):
+                module_logs = []
+                for file in os.listdir(log_dir):
+                    if file.endswith('.log'):
+                        file_path = os.path.join(log_dir, file)
+                        file_size = os.path.getsize(file_path)
+                        file_mtime = os.path.getmtime(file_path)
+                        module_logs.append({
+                            "filename": file,
+                            "size_bytes": file_size,
+                            "size_mb": round(file_size / 1024 / 1024, 2),
+                            "modified_time": datetime.fromtimestamp(file_mtime).isoformat()
+                        })
+                log_files[module] = module_logs
+        export_data["log_files"] = log_files
+        
+        # 7. 管理员日志
+        admin_logs = []
+        for file in glob.glob("admin_log_*.json"):
+            try:
+                with open(file, 'r', encoding='utf-8') as f:
+                    logs = json.load(f)
+                    admin_logs.extend(logs)
+            except Exception:
+                pass
+        export_data["admin_logs"] = admin_logs
+        
+        # 8. 系统信息
+        export_data["system_info"] = {
+            "export_time": get_shanghai_now().isoformat(),
+            "bot_token": TELEGRAM_BOT_TOKEN[:10] + "..." if TELEGRAM_BOT_TOKEN else None,
+            "chat_id": TELEGRAM_CHAT_ID,
+            "python_version": sys.version,
+            "platform": sys.platform
+        }
+        
+        # 保存到本地文件
+        now = get_shanghai_now()
+        export_file = f"export_{now.strftime(LOG_TIME_FMT)}.json"
+        
+        with open(export_file, "w", encoding="utf-8") as f:
+            json.dump(export_data, f, ensure_ascii=False, indent=2)
+        
+        # 生成详细报告
+        report = generate_export_report(export_data, export_file)
+        
+        # 发送报告到Bot
+        await update.message.reply_text(
+            report,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
+        # 记录操作日志
+        log_admin_action_daily(user_id, 'export', [], f"导出到{export_file}")
+        
+        print(f"✅ 管理员 {user_id} 成功导出数据到 {export_file}")
+        
+    except Exception as e:
+        error_msg = f"❌ 导出数据失败：{e}"
+        await update.message.reply_text(error_msg, reply_markup=ReplyKeyboardRemove())
+        print(f"❌ 导出数据失败：{e}")
+
+def generate_export_report(export_data, export_file):
+    """生成导出数据报告"""
+    stats = export_data.get("usage_stats", {})
+    user_perms = export_data.get("user_permissions", {})
+    daily_usage = export_data.get("daily_usage", {})
+    scheduled_tasks = export_data.get("scheduled_tasks", [])
+    user_accounts = export_data.get("user_accounts", {})
+    log_files = export_data.get("log_files", {})
+    admin_logs = export_data.get("admin_logs", [])
+    
+    # 计算统计数据
+    total_users = len(stats)
+    total_allowed = len(user_perms.get("allowed_users", []))
+    total_banned = len(user_perms.get("banned_users", []))
+    total_temp = len(user_perms.get("temp_users", {}))  # temp_users 是字典
+    total_tasks = len(scheduled_tasks)  # scheduled_tasks 是字典
+    total_admin_logs = len(admin_logs)
+    
+    # 计算今日使用情况
+    today = date.today().isoformat()
+    today_usage = daily_usage.get(today, {})
+    today_total = sum(today_usage.values())
+    
+    # 计算账号统计
+    acck_accounts = len(user_accounts.get("Acck", {}))
+    akile_accounts = len(user_accounts.get("Akile", {}))
+    
+    # 计算日志文件统计
+    acck_logs = len(log_files.get("Acck", []))
+    akile_logs = len(log_files.get("Akile", []))
+    total_log_size = sum(
+        log.get("size_mb", 0) 
+        for module_logs in log_files.values() 
+        for log in module_logs
+    )
+    
+    report = f"""📊 **数据导出完成**
+
+📁 **文件信息：**
+• 文件名：`{export_file}`
+• 导出时间：{export_data.get("system_info", {}).get("export_time", "未知")}
+
+👥 **用户统计：**
+• 总用户数：{total_users}
+• 白名单用户：{total_allowed}
+• 黑名单用户：{total_banned}
+• 临时用户：{total_temp}
+
+📈 **使用统计：**
+• 今日总使用次数：{today_total}
+• 今日活跃用户：{len(today_usage)}
+
+🔧 **任务统计：**
+• 定时任务总数：{total_tasks}
+• 活跃任务：{len([t for t in scheduled_tasks.values() if t.get("enabled", True)])}
+
+📝 **账号统计：**
+• Acck账号：{acck_accounts}
+• Akile账号：{akile_accounts}
+
+📋 **日志统计：**
+• Acck日志文件：{acck_logs}
+• Akile日志文件：{akile_logs}
+• 总日志大小：{total_log_size:.2f} MB
+
+🔍 **管理日志：**
+• 管理员操作记录：{total_admin_logs} 条
+
+💾 **数据完整性：**
+✅ 用户权限数据
+✅ 使用统计数据  
+✅ 定时任务数据
+✅ 账号信息数据（密码已脱敏）
+✅ 日志文件列表
+✅ 管理员操作日志
+✅ 系统信息
+
+📋 **文件位置：**
+`{os.path.abspath(export_file)}`
+
+💡 **说明：**
+• 敏感信息（密码、TOTP）已自动脱敏
+• 数据包含完整的系统状态快照
+• 可用于备份、迁移或数据分析
+"""
+    
+    return report
 
 async def setlimit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1209,43 +1541,89 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== 注册命令 ==========
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """设置Bot命令菜单"""
     user_id = update.effective_user.id
     if not is_allowed(user_id):
         await update.message.reply_text("您无权使用本Bot，仅限授权用户。")
         return ConversationHandler.END
+    
+    # 检查管理员权限
     is_ok, warn_msg = check_admin_and_warn(user_id, 'menu')
     if not is_ok:
         await update.message.reply_text(warn_msg, reply_markup=ReplyKeyboardRemove())
         return
-    all_commands = [
-        ("acck", "Acck签到"),
-        ("akile", "Akile签到"),
-        ("me", "查询我的状态和统计"),
-        ("unbind", "注销/解绑账号信息"),
-        ("help", "帮助说明"),
-        ("allow", "授权用户"),
-        ("disallow", "移除白名单"),
-        ("ban", "封禁用户"),
-        ("unban", "解封用户"),
-        ("stats", "使用统计"),
-        ("top", "活跃排行"),
-        ("broadcast", "广播消息"),
-        ("export", "导出数据"),
-        ("setlimit", "设置每日次数"),
-        ("restart", "重启Bot"),
-        ("shutdown", "关闭Bot")
-        # 不再包含 ("menu", "获取/刷新命令菜单")
-    ]
-    await context.bot.set_my_commands(
-        [BotCommand(cmd, desc) for cmd, desc in all_commands]
-    )
-    botfather_text = '\n'.join([f'/{cmd} - {desc}' for cmd, desc in all_commands])
-    await update.message.reply_text(
-        "✅ 已自动为Bot设置命令菜单！所有用户输入 / 均可见全部命令（Telegram API限制）。\n\n"
-        "如需手动设置，也可复制以下内容粘贴到BotFather：\n\n"
-        f"{botfather_text}",
-        reply_markup=ReplyKeyboardRemove()
-    )
+    
+    try:
+        # 基础用户命令
+        user_commands = [
+            ("start", "启动机器人"),
+            ("acck", "Acck平台签到"),
+            ("akile", "Akile平台签到"),
+            ("me", "查询我的状态和统计"),
+            ("unbind", "注销/解绑账号信息"),
+            ("help", "帮助说明"),
+            ("list", "查看所有任务"),
+            ("add", "添加定时任务"),
+            ("del", "删除定时任务")
+        ]
+        
+        # 管理员命令
+        admin_commands = [
+            ("allow", "授权用户"),
+            ("disallow", "移除白名单"),
+            ("ban", "封禁用户"),
+            ("unban", "解封用户"),
+            ("stats", "使用统计"),
+            ("top", "活跃排行"),
+            ("broadcast", "广播消息"),
+            ("export", "导出数据"),
+            ("setlimit", "设置每日次数"),
+            ("restart", "重启Bot"),
+            ("shutdown", "关闭Bot"),
+            ("summary", "查看汇总日志"),
+            ("clean_cache", "清理缓存")
+        ]
+        
+        # 合并所有命令
+        all_commands = user_commands + admin_commands
+        
+        # 设置Bot命令菜单
+        await context.bot.set_my_commands(
+            [BotCommand(cmd, desc) for cmd, desc in all_commands]
+        )
+        
+        # 生成BotFather格式的命令列表
+        botfather_text = '\n'.join([f'/{cmd} - {desc}' for cmd, desc in all_commands])
+        
+        # 生成用户可见的命令列表（排除管理员命令）
+        user_visible_text = '\n'.join([f'/{cmd} - {desc}' for cmd, desc in user_commands])
+        
+        success_msg = (
+            "✅ **Bot命令菜单设置成功！**\n\n"
+            "📱 **用户可见命令：**\n"
+            f"{user_visible_text}\n\n"
+            "🔧 **管理员专用命令：**\n"
+            f"{len(admin_commands)} 个管理员命令已设置\n\n"
+            "💡 **说明：**\n"
+            "• 普通用户只能看到基础命令\n"
+            "• 管理员可以看到所有命令\n"
+            "• 命令菜单会自动更新\n\n"
+            "📋 **BotFather设置内容：**\n"
+            f"```\n{botfather_text}\n```"
+        )
+        
+        await update.message.reply_text(
+            success_msg, 
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
+        print(f"✅ 管理员 {user_id} 成功更新了Bot命令菜单")
+        
+    except Exception as e:
+        error_msg = f"❌ 设置命令菜单失败：{e}"
+        await update.message.reply_text(error_msg, reply_markup=ReplyKeyboardRemove())
+        print(f"❌ 设置命令菜单失败：{e}")
 
 # ========== 非管理员尝试管理命令计数与自动拉黑 ==========
 def record_admin_attempt(user_id, command):
@@ -1489,6 +1867,9 @@ async def add_input_username(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_file = get_user_file(module, username)
     context.user_data['add_username'] = username
     
+    # 设置用户状态为输入中
+    message_manager.set_user_state(update.effective_user.id, 'inputting')
+    
     # 删除用户输入的账号消息
     await delete_user_message(update)
     
@@ -1497,37 +1878,12 @@ async def add_input_username(update: Update, context: ContextTypes.DEFAULT_TYPE)
             info = json.load(f)
         context.user_data['existing_info'] = info
         # 编辑消息显示是否使用现有账号的提示
-        try:
-            current_msg_id = context.user_data.get('current_flow_msg_ids', [None])[-1]
-            if current_msg_id:
-                await update.get_bot().edit_message_text(
-                    chat_id=update.effective_chat.id,
-                    message_id=current_msg_id,
-                    text="检测到已有账号信息，是否直接使用？\n回复'是'直接用，回复'否'重新输入密码和TOTP。",
-                    reply_markup=None
-                )
-        except Exception as e:
-            print(f"编辑消息失败: {e}")
-            # 如果编辑失败，发送新消息
-            msg = await bot_reply_prompt(update, "检测到已有账号信息，是否直接使用？\n回复'是'直接用，回复'否'重新输入密码和TOTP。")
-            add_flow_msg_id(context, msg.message_id)
+        await edit_current_message(update, context, 
+            "检测到已有账号信息，是否直接使用？\n回复'是'直接用，回复'否'重新输入密码和TOTP。")
         return "ADD_USE_EXISTING"
     else:
         # 编辑消息显示密码输入提示
-        try:
-            current_msg_id = context.user_data.get('current_flow_msg_ids', [None])[-1]
-            if current_msg_id:
-                await update.get_bot().edit_message_text(
-                    chat_id=update.effective_chat.id,
-                    message_id=current_msg_id,
-                    text="请输入密码：",
-                    reply_markup=None
-                )
-        except Exception as e:
-            print(f"编辑消息失败: {e}")
-            # 如果编辑失败，发送新消息
-            msg = await bot_reply_prompt(update, "请输入密码：")
-            add_flow_msg_id(context, msg.message_id)
+        await edit_current_message(update, context, "请输入密码：")
         return "ADD_INPUT_PASSWORD"
 
 async def add_use_existing(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1541,20 +1897,7 @@ async def add_use_existing(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await add_select_time(update, context, edit=True)
     else:
         # 编辑消息显示密码输入提示
-        try:
-            current_msg_id = context.user_data.get('current_flow_msg_ids', [None])[-1]
-            if current_msg_id:
-                await update.get_bot().edit_message_text(
-                    chat_id=update.effective_chat.id,
-                    message_id=current_msg_id,
-                    text="请输入密码：",
-                    reply_markup=None
-                )
-        except Exception as e:
-            print(f"编辑消息失败: {e}")
-            # 如果编辑失败，发送新消息
-            msg = await bot_reply_prompt(update, "请输入密码：")
-            add_flow_msg_id(context, msg.message_id)
+        await edit_current_message(update, context, "请输入密码：")
         return "ADD_INPUT_PASSWORD"
 
 async def add_input_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1564,19 +1907,7 @@ async def add_input_password(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await delete_user_message(update)
     
     # 编辑消息显示TOTP输入提示
-    try:
-        current_msg_id = context.user_data.get('current_flow_msg_ids', [None])[-1]
-        if current_msg_id:
-            await update.get_bot().edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=current_msg_id,
-                text="如有TOTP验证码请输入，没有请回复'无'："
-            )
-    except Exception as e:
-        print(f"编辑消息失败: {e}")
-        # 如果编辑失败，发送新消息
-        msg = await bot_reply_prompt(update, "如有TOTP验证码请输入，没有请回复'无'：")
-        add_flow_msg_id(context, msg.message_id)
+    await edit_current_message(update, context, "如有TOTP验证码请输入，没有请回复'无'：")
     return "ADD_INPUT_TOTP"
 
 async def add_input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1596,19 +1927,7 @@ async def add_input_totp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_user_message(update)
     
     # 编辑消息显示时间选择提示
-    try:
-        current_msg_id = context.user_data.get('current_flow_msg_ids', [None])[-1]
-        if current_msg_id:
-            await update.get_bot().edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=current_msg_id,
-                text="账号信息已保存，接下来请选择定时任务时间："
-            )
-    except Exception as e:
-        print(f"编辑消息失败: {e}")
-        # 如果编辑失败，发送新消息
-        msg = await bot_reply_prompt(update, "账号信息已保存，接下来请选择定时任务时间：")
-        add_flow_msg_id(context, msg.message_id)
+    await edit_current_message(update, context, "账号信息已保存，接下来请选择定时任务时间：")
     # 自动进入时间选择
     return await add_select_time(update, context, edit=True)
 
@@ -1726,18 +2045,33 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 last_run = datetime.fromisoformat(task['last_run']).strftime('%Y-%m-%d %H:%M:%S')
             except:
                 pass
-        # 编号规则：如10:01→1001，0:10→010
-        hour = int(task['hour'])
-        minute = int(task['minute'])
-        number = f"{hour:02d}{minute:02d}".lstrip('0') or '0'
+        
+        # 获取今日状态
+        today_status = get_task_today_status(task['module'], task.get('username', ''))
+        
+        # 编号规则：使用任务ID的后6位作为唯一编号
+        task_number = task_id[-6:] if len(task_id) >= 6 else task_id
         # 检查是否是失败的任务
         is_failed = task_id in failed_task_ids
-        status_icon = "🔴" if is_failed else "🟢"
-        number_str = f"[{number}] " if is_failed else ""
+        # 根据今日状态显示图标
+        if today_status == 'success':
+            status_icon = "✅"
+            status_text = "✅ 启用 (今日已成功)"
+        elif today_status == 'error':
+            status_icon = "🔴"
+            status_text = "✅ 启用 (今日失败)"
+        elif is_failed:
+            status_icon = "🔴"
+            status_text = "✅ 启用 (失败)"
+        else:
+            status_icon = "🟢"
+            status_text = "✅ 启用 (待执行)"
+        
+        number_str = f"[{task_number}] " if is_failed else ""
         if is_failed:
-            failed_task_number_map[number] = task_id
+            failed_task_number_map[task_number] = task_id
         message += f"{status_icon} {number_str}{task['module']} {task['hour']:02d}:{task['minute']:02d} 账号: {task.get('username','')}\n"
-        message += f"   状态: {status}\n"
+        message += f"   状态: {status_text}\n"
         message += f"   最后运行: {last_run}\n"
         message += f"   任务ID: {task_id}\n\n"
     # 保存编号映射到用户会话，供后续手动执行用
@@ -1770,8 +2104,24 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if failed_task_number_map:
         buttons.append([InlineKeyboardButton("🔧 手动执行失败任务", callback_data="all_manual_execute")])
     reply_markup = InlineKeyboardMarkup(buttons)
-    # 使用 bot_send_message 发送任务列表，10秒后自动撤回
-    msg = await bot_send_message(context, update.effective_chat.id, message + "\n如需退出请发送 /cancel", reply_markup=reply_markup)
+    # 使用智能消息管理
+    msg = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=message + "\n如需退出请发送 /cancel",
+        reply_markup=reply_markup
+    )
+    
+    # 根据是否有失败任务决定撤回时间
+    if failed_task_number_map:
+        # 有失败任务时，延长撤回时间到60秒，给用户更多时间操作
+        delay = 60
+    else:
+        # 没有失败任务时，使用10秒撤回
+        delay = 10
+    
+    # 使用智能自动删除
+    await smart_auto_delete_message(update, context, delay)
+    
     add_flow_msg_id(context, msg.message_id)
     # 处理按钮回调
     context.user_data['all_cmd_from_list'] = True
@@ -1943,10 +2293,21 @@ async def all_cmd_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not failed_map:
             await query.edit_message_text("✅ 当前没有失败的任务需要手动执行！")
             return ConversationHandler.END
-        msg = "🔧 请输入要手动执行的任务编号（如1001），或发送 /cancel 退出：\n\n"
+        
+        # 标记进入手动执行模式，阻止任务列表自动撤回
+        context.user_data['manual_execute_mode'] = True
+        
+        # 设置用户状态为手动执行
+        message_manager.set_user_state(query.from_user.id, 'manual_execute')
+        
+        # 构建手动执行提示消息
+        msg = "🔧 *手动执行失败任务*\n\n"
+        msg += "请输入要手动执行的任务编号，或发送 /cancel 退出：\n\n"
         for number, task_id in failed_map.items():
-            msg += f"[{number}] 任务ID: {task_id}\n"
-        await query.edit_message_text(msg)
+            msg += f"[{number}] 任务ID: `{task_id}`\n"
+        msg += "\n💡 *说明：*\n• 执行结果将不会自动撤回\n• 可以连续执行多个任务\n• 使用 /cancel 可随时退出\n• 任务列表将保持显示"
+        
+        await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN)
         return "MANUAL_EXECUTE_INPUT"
     elif query.data == "all_back_to_list":
         # 返回任务列表 - 清理状态并重新生成
@@ -1960,45 +2321,78 @@ async def all_cmd_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 新增：手动执行编号输入处理
 async def manual_execute_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """手动执行任务输入处理 - 智能消息管理"""
     user_id = update.effective_user.id
     if not is_allowed(user_id):
         await update.message.reply_text("您无权使用本Bot，仅限授权用户。")
         return ConversationHandler.END
+    
+    # 设置用户状态为手动执行
+    message_manager.set_user_state(user_id, 'manual_execute')
+    
     text = update.message.text.strip()
     if text == "/cancel":
-        msg = await bot_reply_message(update, "已退出手动执行流程。", reply_markup=ReplyKeyboardRemove())
-        add_flow_msg_id(context, msg.message_id)
+        # 清理手动执行模式标记
+        context.user_data.pop('manual_execute_mode', None)
+        # 重置用户状态
+        message_manager.set_user_state(user_id, 'idle')
+        # 退出消息不自动撤回
+        await update.message.reply_text("已退出手动执行流程。", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
+    
     failed_map = context.user_data.get('failed_task_number_map', {})
     if text not in failed_map:
-        msg = await bot_reply_prompt(update, f"❌ 无效编号 [{text}]，请重新输入，或发送 /cancel 退出。")
-        add_flow_msg_id(context, msg.message_id)
+        # 错误提示不自动撤回
+        await update.message.reply_text(f"❌ 无效编号 [{text}]，请重新输入，或发送 /cancel 退出。")
         return "MANUAL_EXECUTE_INPUT"
+    
     task_id = failed_map[text]
+    
+    # 发送执行中提示
+    processing_msg = await update.message.reply_text("🔄 正在执行任务，请稍候...")
+    
+    # 执行任务
     success, message = execute_task_manually(task_id, user_id)
+    
+    # 删除执行中提示
+    try:
+        await processing_msg.delete()
+    except Exception:
+        pass
+    
     if success:
         # 执行成功后刷新失败任务
         failed_tasks = get_failed_tasks(user_id)
         if not failed_tasks:
-            msg = await bot_reply_message(update, f"✅ {message}\n\n🎉 当前没有失败的任务了！", reply_markup=ReplyKeyboardRemove())
-            add_flow_msg_id(context, msg.message_id)
-            # 自动返回主菜单或任务列表 - 清理状态并重新生成
+            # 成功消息不自动撤回
+            result_msg = f"✅ *任务执行成功！*\n\n{message}\n\n🎉 *恭喜！当前没有失败的任务了！*"
+            await update.message.reply_text(
+                result_msg, 
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=ReplyKeyboardRemove()
+            )
+            # 清理手动执行模式标记
+            context.user_data.pop('manual_execute_mode', None)
+            # 重置用户状态
+            message_manager.set_user_state(user_id, 'idle')
+            # 自动返回任务列表
             context.user_data.pop('current_flow_msg_ids', None)
             context.user_data.pop('all_cmd_from_list', None)
             await all_cmd(update, context)
             return ConversationHandler.END
         else:
             # 重新展示编号输入
-            context.user_data['failed_task_number_map'] = {f"{int(t['hour']):02d}{int(t['minute']):02d}".lstrip('0') or '0': t['task_id'] for t in failed_tasks}
-            msg_text = f"✅ {message}\n\n📊 当前还有 {len(failed_tasks)} 个失败的任务，请继续输入编号，或发送 /cancel 退出：\n"
+            context.user_data['failed_task_number_map'] = {t['task_id'][-6:] if len(t['task_id']) >= 6 else t['task_id']: t['task_id'] for t in failed_tasks}
+            msg_text = f"✅ *任务执行成功！*\n\n{message}\n\n📊 *当前还有 {len(failed_tasks)} 个失败的任务，请继续输入编号，或发送 /cancel 退出：*\n"
             for number, tid in context.user_data['failed_task_number_map'].items():
-                msg_text += f"[{number}] 任务ID: {tid}\n"
-            msg = await bot_reply_prompt(update, msg_text)
-            add_flow_msg_id(context, msg.message_id)
+                msg_text += f"[{number}] 任务ID: `{tid}`\n"
+            # 结果消息不自动撤回
+            await update.message.reply_text(msg_text, parse_mode=ParseMode.MARKDOWN)
             return "MANUAL_EXECUTE_INPUT"
     else:
-        msg = await bot_reply_prompt(update, f"❌ {message}\n请重新输入编号，或发送 /cancel 退出。")
-        add_flow_msg_id(context, msg.message_id)
+        # 失败消息不自动撤回
+        error_msg = f"❌ *任务执行失败！*\n\n{message}\n\n请重新输入编号，或发送 /cancel 退出。"
+        await update.message.reply_text(error_msg, parse_mode=ParseMode.MARKDOWN)
         return "MANUAL_EXECUTE_INPUT"
 
 # ConversationHandler注册
@@ -2064,11 +2458,28 @@ def main():
     )
     app.add_handler(conv_handler)
     
+    # 用户命令
     app.add_handler(CommandHandler('me', me_cmd))
     app.add_handler(CommandHandler('unbind', unbind_cmd))
     app.add_handler(CommandHandler('help', help_cmd))
     app.add_handler(CommandHandler('menu', menu_cmd))
     app.add_handler(CommandHandler('summary', summary_cmd))
+    app.add_handler(CommandHandler('clear', clear_cmd))  # 清屏命令
+    
+    # 管理员命令
+    app.add_handler(CommandHandler('allow', allow_user))
+    app.add_handler(CommandHandler('disallow', disallow_user))
+    app.add_handler(CommandHandler('ban', ban_user))
+    app.add_handler(CommandHandler('unban', unban_user))
+    app.add_handler(CommandHandler('stats', stats_cmd))
+    app.add_handler(CommandHandler('top', top_cmd))
+    app.add_handler(CommandHandler('broadcast', broadcast_cmd))
+    app.add_handler(CommandHandler('export', export_cmd))
+    app.add_handler(CommandHandler('setlimit', setlimit_cmd))
+    app.add_handler(CommandHandler('restart', restart_cmd))
+    app.add_handler(CommandHandler('shutdown', shutdown_cmd))
+    
+    # 任务管理命令
     app.add_handler(add_conv_handler)
     app.add_handler(CommandHandler('del', del_cmd))
     app.add_handler(all_cmd_conv_handler)
@@ -2076,6 +2487,7 @@ def main():
     # 启动自动清理缓存定时任务
     schedule_clean_cache(app)
     app.add_handler(CommandHandler('clean_cache', clean_cache_cmd))
+    app.add_handler(CommandHandler('clean_logs', clean_logs_cmd))  # 日志清理命令
     
     print('🚀 Bot已启动...')
     print('🕐 定时任务调度器已启动...')
@@ -2339,6 +2751,38 @@ def schedule_clean_cache(application):
     job_queue = application.job_queue
     job_queue.run_repeating(clean_cache_async, interval=86400, first=0)
 
+def clean_old_logs():
+    """
+    清理过期的日志文件（3天前）
+    
+    Returns:
+        int: 清理的文件数量
+    """
+    cleaned_count = 0
+    cutoff_time = datetime.now() - timedelta(days=3)
+    
+    try:
+        # 清理各个模块的日志目录
+        for module in ['Acck', 'Akile']:
+            log_dir = get_log_dir(module)
+            if os.path.exists(log_dir):
+                for filename in os.listdir(log_dir):
+                    file_path = os.path.join(log_dir, filename)
+                    if os.path.isfile(file_path):
+                        # 检查文件修改时间
+                        file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+                        if file_mtime < cutoff_time:
+                            try:
+                                os.remove(file_path)
+                                cleaned_count += 1
+                                print(f"🗑️ 已删除过期日志: {file_path}")
+                            except Exception as e:
+                                print(f"❌ 删除日志文件失败 {file_path}: {e}")
+    except Exception as e:
+        print(f"❌ 清理日志时出错: {e}")
+    
+    return cleaned_count
+
 # 管理员命令
 async def clean_cache_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2367,13 +2811,63 @@ async def clean_cache_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("缓存清理和数据汇总完成。")
 
+async def clean_logs_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    清理过期日志命令
+    
+    Args:
+        update: Telegram更新对象
+        context: Telegram上下文
+    """
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        await update.message.reply_text("您无权使用本Bot，仅限授权用户。")
+        return
+    
+    try:
+        # 清理3天前的日志文件
+        cleaned_count = clean_old_logs()
+        await update.message.reply_text(f"✅ 日志清理完成！已删除 {cleaned_count} 个过期日志文件。")
+    except Exception as e:
+        print(f"清理日志失败: {e}")
+        await update.message.reply_text("❌ 清理日志失败，请稍后重试")
+
 # 同步推送Telegram消息（用于线程/异常场景）
 def send_telegram_sync(token, chat_id, text):
+    """同步发送Telegram消息，带重试机制"""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        requests.post(url, json={"chat_id": chat_id, "text": text})
-    except Exception as e:
-        print(f"同步推送Telegram失败: {e}")
+    data = {"chat_id": chat_id, "text": text}
+    
+    for attempt in range(TELEGRAM_RETRY_COUNT):
+        try:
+            response = requests.post(
+                url, 
+                json=data, 
+                timeout=TELEGRAM_TIMEOUT,
+                headers={'User-Agent': 'QiandaoBot/1.0'}
+            )
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('ok'):
+                    return True
+                else:
+                    print(f"Telegram API错误: {result.get('description', '未知错误')}")
+            else:
+                print(f"HTTP错误: {response.status_code}")
+        except requests.exceptions.Timeout:
+            print(f"请求超时 (尝试 {attempt + 1}/{TELEGRAM_RETRY_COUNT})")
+        except requests.exceptions.ConnectionError as e:
+            print(f"连接错误 (尝试 {attempt + 1}/{TELEGRAM_RETRY_COUNT}): {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"请求错误 (尝试 {attempt + 1}/{TELEGRAM_RETRY_COUNT}): {e}")
+        except Exception as e:
+            print(f"未知错误 (尝试 {attempt + 1}/{TELEGRAM_RETRY_COUNT}): {e}")
+        
+        if attempt < TELEGRAM_RETRY_COUNT - 1:
+            time.sleep(TELEGRAM_RETRY_DELAY)
+    
+    print(f"❌ 同步推送Telegram失败，已重试 {TELEGRAM_RETRY_COUNT} 次")
+    return False
 
 # 处理手动执行任务选择
 async def manual_execute_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2443,25 +2937,47 @@ async def bot_send_message(context, chat_id, text, **kwargs):
 
 async def bot_reply_message(update, text, **kwargs):
     """
-    Bot回复消息并在10秒后自动撤回
+    Bot回复消息并在10秒后自动撤回，带重试机制
     
     Args:
         update: Telegram更新对象
         text: 消息内容
         **kwargs: 其他参数
     """
-    msg = await update.message.reply_text(text, **kwargs)
-    
-    async def _auto_delete():
-        await asyncio.sleep(10)  # 10秒后撤回
+    for attempt in range(TELEGRAM_RETRY_COUNT):
         try:
-            await update.get_bot().delete_message(chat_id=msg.chat_id, message_id=msg.message_id)
-        except Exception:
-            # 消息撤回失败，通常是因为消息已被删除或权限不足
-            pass
-    
-    asyncio.create_task(_auto_delete())
-    return msg
+            msg = await update.message.reply_text(text, **kwargs)
+            
+            # 记录消息ID用于流程管理
+            if hasattr(update, '_effective_chat') and hasattr(update._effective_chat, '_bot') and hasattr(update._effective_chat._bot, '_context'):
+                context = update._effective_chat._bot._context
+                if 'current_flow_msg_ids' not in context.user_data:
+                    context.user_data['current_flow_msg_ids'] = []
+                context.user_data['current_flow_msg_ids'].append(msg.message_id)
+            
+            async def _auto_delete():
+                await asyncio.sleep(10)  # 10秒后撤回
+                try:
+                    await update.get_bot().delete_message(chat_id=msg.chat_id, message_id=msg.message_id)
+                except Exception:
+                    # 消息撤回失败，通常是因为消息已被删除或权限不足
+                    pass
+            
+            asyncio.create_task(_auto_delete())
+            return msg
+            
+        except Exception as e:
+            print(f"发送消息失败 (尝试 {attempt + 1}/{TELEGRAM_RETRY_COUNT}): {e}")
+            if attempt < TELEGRAM_RETRY_COUNT - 1:
+                await asyncio.sleep(TELEGRAM_RETRY_DELAY)
+            else:
+                print(f"❌ 发送消息最终失败: {e}")
+                # 最后的备用方案：使用同步方式
+                try:
+                    send_telegram_sync(TELEGRAM_BOT_TOKEN, update.effective_chat.id, text)
+                except Exception as sync_e:
+                    print(f"❌ 同步发送也失败: {sync_e}")
+                return None
 
 # ========== Bot提示消息发送工具（不自动撤回）==========
 async def bot_send_prompt(context, chat_id, text, **kwargs):
@@ -2489,10 +3005,71 @@ async def bot_reply_prompt(update, text, **kwargs):
     msg = await update.message.reply_text(text, **kwargs)
     return msg
 
-# ========== 消息编辑辅助工具 ==========
+# ========== 手动执行任务结果消息发送工具（不自动撤回）==========
+async def send_manual_execute_result(context, chat_id, text, **kwargs):
+    """
+    发送手动执行任务结果消息，不自动撤回
+    
+    Args:
+        context: Telegram上下文
+        chat_id: 聊天ID
+        text: 消息内容
+        **kwargs: 其他参数
+    """
+    msg = await context.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+    return msg
+
+async def reply_manual_execute_result(update, text, **kwargs):
+    """
+    回复手动执行任务结果消息，不自动撤回
+    
+    Args:
+        update: Telegram更新对象
+        text: 消息内容
+        **kwargs: 其他参数
+    """
+    msg = await update.message.reply_text(text, **kwargs)
+    return msg
+
+# ========== 智能消息管理系统 ==========
+class MessageManager:
+    """智能消息管理器，根据用户操作状态决定是否自动删除消息"""
+    
+    def __init__(self):
+        self.user_states = {}  # 用户状态跟踪
+        self.pending_deletions = {}  # 待删除的消息
+    
+    def set_user_state(self, user_id, state):
+        """设置用户状态"""
+        self.user_states[user_id] = state
+    
+    def get_user_state(self, user_id):
+        """获取用户状态"""
+        return self.user_states.get(user_id, 'idle')
+    
+    def add_pending_deletion(self, user_id, msg_id, delay=10):
+        """添加待删除消息"""
+        if user_id not in self.pending_deletions:
+            self.pending_deletions[user_id] = []
+        self.pending_deletions[user_id].append((msg_id, delay))
+    
+    def clear_pending_deletions(self, user_id):
+        """清除用户的待删除消息"""
+        if user_id in self.pending_deletions:
+            del self.pending_deletions[user_id]
+    
+    def should_auto_delete(self, user_id):
+        """判断是否应该自动删除消息"""
+        state = self.get_user_state(user_id)
+        # 如果用户正在输入或确认操作，不自动删除
+        return state not in ['inputting', 'confirming', 'manual_execute']
+
+# 全局消息管理器实例
+message_manager = MessageManager()
+
 async def edit_current_message(update, context, text, **kwargs):
     """
-    编辑当前流程的消息
+    智能编辑当前流程的消息
     
     Args:
         update: Telegram更新对象
@@ -2503,14 +3080,43 @@ async def edit_current_message(update, context, text, **kwargs):
     try:
         current_msg_id = context.user_data.get('current_flow_msg_ids', [None])[-1]
         if current_msg_id:
-            await update.get_bot().edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=current_msg_id,
-                text=text,
-                **kwargs
-            )
+            # 检查是否需要保留内联键盘
+            if 'reply_markup' not in kwargs and 'parse_mode' in kwargs:
+                # 如果只是更新文本，保留原有的内联键盘
+                try:
+                    await update.get_bot().edit_message_text(
+                        chat_id=update.effective_chat.id,
+                        message_id=current_msg_id,
+                        text=text,
+                        **kwargs
+                    )
+                except Exception as e:
+                    if "Inline keyboard expected" in str(e):
+                        # 如果原消息有内联键盘，需要明确指定
+                        await update.get_bot().edit_message_text(
+                            chat_id=update.effective_chat.id,
+                            message_id=current_msg_id,
+                            text=text,
+                            reply_markup=None,
+                            **kwargs
+                        )
+                    else:
+                        raise e
+            else:
+                await update.get_bot().edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=current_msg_id,
+                    text=text,
+                    **kwargs
+                )
     except Exception as e:
         print(f"编辑消息失败: {e}")
+        # 如果编辑失败，发送新消息
+        try:
+            msg = await bot_reply_prompt(update, text, **kwargs)
+            add_flow_msg_id(context, msg.message_id)
+        except Exception as send_e:
+            print(f"发送新消息也失败: {send_e}")
 
 async def delete_user_message(update):
     """
@@ -2524,27 +3130,139 @@ async def delete_user_message(update):
     except Exception:
         pass
 
-async def auto_delete_message(update, context, delay=10):
+async def smart_auto_delete_message(update, context, delay=10):
     """
-    延迟删除当前流程的消息
+    智能延迟删除消息，根据用户状态决定是否删除
     
     Args:
         update: Telegram更新对象
         context: Telegram上下文
         delay: 延迟时间（秒）
     """
-    async def _auto_delete():
+    user_id = update.effective_user.id
+    
+    async def _smart_auto_delete():
         await asyncio.sleep(delay)
-        try:
-            current_msg_id = context.user_data.get('current_flow_msg_ids', [None])[-1]
-            if current_msg_id:
+        
+        # 检查用户状态
+        if message_manager.should_auto_delete(user_id):
+            try:
+                current_msg_id = context.user_data.get('current_flow_msg_ids', [None])[-1]
+                if current_msg_id:
+                    await update.get_bot().delete_message(
+                        chat_id=update.effective_chat.id,
+                        message_id=current_msg_id
+                    )
+            except Exception:
+                pass
+    
+    asyncio.create_task(_smart_auto_delete())
+
+async def auto_delete_message(update, context, delay=10):
+    """
+    延迟删除当前流程的消息（保持向后兼容）
+    
+    Args:
+        update: Telegram更新对象
+        context: Telegram上下文
+        delay: 延迟时间（秒）
+    """
+    await smart_auto_delete_message(update, context, delay)
+
+async def delete_bot_messages_in_flow(update, context):
+    """
+    删除当前流程中的所有 Bot 消息
+    
+    Args:
+        update: Telegram更新对象
+        context: Telegram上下文
+    """
+    try:
+        # 删除记录的消息ID
+        msg_ids = context.user_data.get('current_flow_msg_ids', [])
+        for msg_id in msg_ids:
+            try:
                 await update.get_bot().delete_message(
                     chat_id=update.effective_chat.id,
-                    message_id=current_msg_id
+                    message_id=msg_id
                 )
+            except Exception:
+                pass  # 消息可能已经被删除
+        
+        # 清空消息ID列表
+        context.user_data['current_flow_msg_ids'] = []
+        
+    except Exception as e:
+        print(f"删除流程消息失败: {e}")
+
+async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    清屏命令 - 删除当前流程中的 Bot 消息
+    
+    Args:
+        update: Telegram更新对象
+        context: Telegram上下文
+    """
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        await update.message.reply_text("您无权使用本Bot，仅限授权用户。")
+        return
+    
+    try:
+        chat_id = update.effective_chat.id
+        
+        # 删除用户发送的清屏命令
+        await update.message.delete()
+        
+        # 删除记录的流程消息
+        deleted_count = 0
+        msg_ids = context.user_data.get('current_flow_msg_ids', [])
+        for msg_id in msg_ids:
+            try:
+                await update.get_bot().delete_message(
+                    chat_id=chat_id,
+                    message_id=msg_id
+                )
+                deleted_count += 1
+            except Exception:
+                pass  # 消息可能已经被删除
+        
+        # 清空消息ID列表
+        context.user_data['current_flow_msg_ids'] = []
+        
+        # 发送清屏确认消息
+        if deleted_count > 0:
+            confirm_msg = await update.get_bot().send_message(
+                chat_id=chat_id,
+                text=f"🧹 已清理 {deleted_count} 条消息"
+            )
+            # 3秒后删除确认消息
+            await asyncio.sleep(3)
+            try:
+                await confirm_msg.delete()
+            except Exception:
+                pass
+        else:
+            confirm_msg = await update.get_bot().send_message(
+                chat_id=chat_id,
+                text="🧹 没有找到可清理的消息"
+            )
+            # 2秒后删除确认消息
+            await asyncio.sleep(2)
+            try:
+                await confirm_msg.delete()
+            except Exception:
+                pass
+            
+    except Exception as e:
+        print(f"清屏操作失败: {e}")
+        try:
+            await update.get_bot().send_message(
+                chat_id=chat_id,
+                text="❌ 清屏操作失败，请稍后重试"
+            )
         except Exception:
             pass
-    asyncio.create_task(_auto_delete())
 
 # ========== 文件路径管理 ==========
 def get_project_root():
